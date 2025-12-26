@@ -206,9 +206,8 @@ Client::get_v1_chat_completions_params(V1ChatCompletionParams* params)
     if (!json.isObject())
         return send_error(400, "JSON body must be an object");
 
-    // fields openai documents that we don't support yet
-    if (json.contains("tools"))
-        return send_error(400, "OpenAI tools field not supported yet");
+    // tools parameter is accepted but ignored - client handles tool execution
+    // tool_choice is also accepted but ignored (see below)
     if (json.contains("audio"))
         return send_error(400, "OpenAI audio field not supported yet");
     if (json.contains("logprobs"))
@@ -217,8 +216,10 @@ Client::get_v1_chat_completions_params(V1ChatCompletionParams* params)
         return send_error(400, "OpenAI functions field not supported yet");
     if (json.contains("modalities"))
         return send_error(400, "OpenAI modalities field not supported yet");
-    if (json.contains("tool_choice"))
-        return send_error(400, "OpenAI tool_choice field not supported yet");
+    // tool_choice is accepted but ignored (we always use "auto" behavior)
+    if (json.contains("tool_choice")) {
+        SLOG("tool_choice parameter received but ignored");
+    }
     if (json.contains("top_logprobs"))
         return send_error(400, "OpenAI top_logprobs field not supported yet");
     if (json.contains("function_call"))
@@ -526,13 +527,16 @@ Client::v1_chat_completions()
     if (zim_tools_available()) {
         std::string tool_prompt = get_zim_tools_system_prompt();
         if (!tool_prompt.empty()) {
+            SLOG("ZIM tools enabled, injecting system prompt (%zu bytes)", tool_prompt.size());
             // Add to existing system message or create new one
             if (!params->messages.empty() &&
                 params->messages[0].role == "system") {
                 params->messages[0].content += tool_prompt;
+                SLOG("ZIM system prompt appended to existing system message");
             } else {
                 params->messages.insert(params->messages.begin(),
                     llama_chat_msg{"system", tool_prompt});
+                SLOG("ZIM system prompt added as new system message");
             }
         }
     }
@@ -727,20 +731,6 @@ Client::v1_chat_completions()
     SLOG("predicted %d tokens finished on %s", //
          completion_tokens,
          finish_reason);
-
-    // handle tool invocations for non-streaming responses
-    if (!params->stream && zim_tools_available()) {
-        ToolInvocation invocation = detect_tool_invocation(response->content);
-        if (invocation.type != ToolInvocation::Type::NONE) {
-            SLOG("detected tool invocation: %s",
-                 invocation.type == ToolInvocation::Type::SEARCH ? "SEARCH" : "READ");
-            auto tool_result = execute_tool(invocation);
-            if (tool_result) {
-                // Append tool result to the response
-                response->content += "\n" + *tool_result;
-            }
-        }
-    }
 
     // finalize response
     cleanup_slot(this);

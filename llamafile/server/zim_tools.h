@@ -17,33 +17,16 @@
 
 #pragma once
 #include <string>
-#include <optional>
 
 namespace lf {
 namespace server {
-
-// Result of parsing tool invocation patterns
-struct ToolInvocation {
-    enum class Type { NONE, SEARCH, READ };
-    Type type = Type::NONE;
-    std::string argument;
-    size_t start_pos = 0;
-    size_t end_pos = 0;
-};
 
 // Check if ZIM tools are available and enabled
 bool zim_tools_available();
 
 // Get the system prompt addition for Wikipedia tools
+// This tells the LLM about available tools and how to invoke them
 std::string get_zim_tools_system_prompt();
-
-// Detect a tool invocation pattern in the given text
-// Looks for [SEARCH: query] or [READ: path] patterns
-ToolInvocation detect_tool_invocation(const std::string& text);
-
-// Execute a tool invocation and return the result
-// Returns nullopt if execution fails
-std::optional<std::string> execute_tool(const ToolInvocation& invocation);
 
 } // namespace server
 } // namespace lf

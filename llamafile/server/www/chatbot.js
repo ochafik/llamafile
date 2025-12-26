@@ -321,46 +321,9 @@ async function sendMessage() {
   chatHistory.push({ role: "user", content: message });
 
   const settings = loadSettings();
+
   try {
-    const stats = {
-      startTime: Date.now(),      // Timestamp when the request started
-      firstContentTime: null, // Timestamp when the first content was received
-      endTime: null,        // Timestamp when the response was fully received
-      promptTokenCount: 0,  // Number of tokens in the prompt
-      reponseTokenCount: 0   // Number of tokens in the response
-    };
-    const response = await fetch("/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${API_KEY}`
-      },
-      body: JSON.stringify({
-        model: flagz.model || "gpt-3.5-turbo",
-        messages: chatHistory,
-        temperature: settings.temperature,
-        top_p: settings.top_p,
-        presence_penalty: settings.presence_penalty,
-        frequency_penalty: settings.frequency_penalty,
-        stream: true,
-        stream_options: {
-          include_usage: true
-        }
-      }),
-      signal: abortController.signal
-    });
-    if (response.ok) {
-      await handleChatStream(response, stats);
-      const lastMessage = streamingMessageContent.join("");
-      if (lastMessage)
-        chatHistory.push({ role: "assistant", content: lastMessage });
-    } else {
-      console.error("sendMessage() failed due to server error", response);
-      chatMessages.appendChild(wrapMessageElement(createMessageElement(
-        `Server replied with error code ${response.status} ${response.statusText}`),
-        "system"));
-      cleanupAfterMessage();
-    }
+    await sendChatRequest(settings, abortController.signal);
   } catch (error) {
     if (error.name !== "AbortError") {
       console.error("sendMessage() failed due to unexpected exception", error);
@@ -370,6 +333,98 @@ async function sendMessage() {
     }
     cleanupAfterMessage();
   }
+}
+
+// Send a chat request and handle tool calls in a loop
+async function sendChatRequest(settings, signal, maxToolIterations = 5) {
+  for (let iteration = 0; iteration < maxToolIterations; iteration++) {
+    const stats = {
+      startTime: Date.now(),
+      firstContentTime: null,
+      endTime: null,
+      promptTokenCount: 0,
+      reponseTokenCount: 0
+    };
+
+    // Build request body
+    const requestBody = {
+      model: flagz.model || "gpt-3.5-turbo",
+      messages: chatHistory,
+      temperature: settings.temperature,
+      top_p: settings.top_p,
+      presence_penalty: settings.presence_penalty,
+      frequency_penalty: settings.frequency_penalty,
+      stream: true,
+      stream_options: {
+        include_usage: true
+      }
+    };
+
+    // Include tools when ZIM is available
+    if (zimAvailable) {
+      requestBody.tools = ZIM_TOOLS;
+    }
+
+    const response = await fetch("/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${API_KEY}`
+      },
+      body: JSON.stringify(requestBody),
+      signal: signal
+    });
+
+    if (!response.ok) {
+      console.error("sendChatRequest() failed due to server error", response);
+      chatMessages.appendChild(wrapMessageElement(createMessageElement(
+        `Server replied with error code ${response.status} ${response.statusText}`),
+        "system"));
+      cleanupAfterMessage();
+      return;
+    }
+
+    await handleChatStream(response, stats);
+    const lastMessage = streamingMessageContent.join("");
+
+    if (!lastMessage) {
+      cleanupAfterMessage();
+      return;
+    }
+
+    // Add assistant message to history
+    chatHistory.push({ role: "assistant", content: lastMessage });
+
+    // Check for tool patterns in the response (when ZIM is available)
+    if (zimAvailable) {
+      const tool = detectToolPattern(lastMessage);
+      if (tool) {
+        console.log("Detected tool invocation:", tool);
+
+        // Execute the tool
+        const toolResult = await executeZimTool(tool);
+        console.log("Tool result:", toolResult.substring(0, 200));
+
+        // Add tool result as a user message (simulating tool output)
+        // This prompts the model to continue with the result
+        chatHistory.push({
+          role: "user",
+          content: `[Tool Result]\n${toolResult}`
+        });
+
+        // Continue the loop to get the model's response to the tool result
+        continue;
+      }
+    }
+
+    // No tool call detected, we're done
+    cleanupAfterMessage();
+    return;
+  }
+
+  // Max iterations reached
+  console.warn("Max tool iterations reached");
+  cleanupAfterMessage();
 }
 
 function onDragBegin(e) {
@@ -845,6 +900,97 @@ async function checkZimAvailable() {
     }
   } catch (error) {
     // ZIM not available, button stays hidden
+  }
+}
+
+// ZIM tool definitions for OpenAI-style tool calling
+const ZIM_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "search_wikipedia",
+      description: "Search for Wikipedia articles matching a query",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "The search query"
+          }
+        },
+        required: ["query"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_wikipedia",
+      description: "Read the content of a Wikipedia article by its path",
+      parameters: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "The article path (e.g., 'A/Albert_Einstein')"
+          }
+        },
+        required: ["path"]
+      }
+    }
+  }
+];
+
+// Detect tool patterns in text ([SEARCH: query] or [READ: path])
+function detectToolPattern(text) {
+  const searchMatch = text.match(/\[SEARCH:\s*([^\]]+)\]/);
+  if (searchMatch) {
+    return { type: "search", argument: searchMatch[1].trim(), fullMatch: searchMatch[0] };
+  }
+  const readMatch = text.match(/\[READ:\s*([^\]]+)\]/);
+  if (readMatch) {
+    return { type: "read", argument: readMatch[1].trim(), fullMatch: readMatch[0] };
+  }
+  return null;
+}
+
+// Execute a ZIM tool and return the result
+async function executeZimTool(tool) {
+  try {
+    if (tool.type === "search") {
+      const response = await fetch("/zim/search?q=" + encodeURIComponent(tool.argument));
+      if (!response.ok) {
+        return `[Error: Search failed with status ${response.status}]`;
+      }
+      const results = await response.json();
+      if (!results || results.length === 0) {
+        return `[No articles found for "${tool.argument}"]`;
+      }
+      let result = `Found ${results.length} article(s):\n`;
+      results.forEach(r => {
+        result += `- ${r.title || r.name} (path: ${r.path})\n`;
+      });
+      return result;
+    } else if (tool.type === "read") {
+      const response = await fetch("/zim/read?path=" + encodeURIComponent(tool.argument));
+      if (!response.ok) {
+        return `[Error: Could not read article at "${tool.argument}"]`;
+      }
+      const data = await response.json();
+      if (!data.content) {
+        return `[Error: Article has no content]`;
+      }
+      // Truncate if too long
+      const maxLen = 4000;
+      let content = data.content;
+      if (content.length > maxLen) {
+        content = content.substring(0, maxLen) + `\n... (truncated, ${data.content.length} characters total)`;
+      }
+      return `Article "${data.title || tool.argument}":\n${content}`;
+    }
+    return `[Unknown tool type: ${tool.type}]`;
+  } catch (error) {
+    return `[Error executing tool: ${error.message}]`;
   }
 }
 

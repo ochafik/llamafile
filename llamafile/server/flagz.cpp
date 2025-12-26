@@ -20,6 +20,7 @@
 #include "llamafile/json.h"
 #include "llamafile/llamafile.h"
 #include "llamafile/string.h"
+#include "zim.h"
 
 namespace lf {
 namespace server {
@@ -56,6 +57,7 @@ Client::flagz()
     } else {
         json["seed"] = FLAG_seed;
     }
+    json["zim_tools"] = FLAG_zim_tools && zim_is_loaded();
     dump_ = json.toStringPretty();
     dump_ += '\n';
     char* p = append_http_response_message(obuf_.p, 200);
