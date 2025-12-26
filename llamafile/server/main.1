@@ -209,6 +209,16 @@ server runs out of context window, old chat messages will be forgotten
 until this percent of the context is empty. The default is 15%. If this
 is specified as a floating point number, e.g. 0.15, then it'll be
 multiplied by 100 to get the percent.
+.It Fl Fl zim Ar FNAME
+Path to ZIM archive file for offline Wikipedia support. ZIM is the
+format used by Kiwix for distributing Wikipedia. When a ZIM file is
+loaded, the server exposes endpoints under /zim/* for searching and
+reading articles. The web UI will also display a Wikipedia button.
+.It Fl Fl zim-tools
+Enable tool calling for ZIM archive in chat completions. When enabled,
+the LLM can use [SEARCH: query] and [READ: path] patterns to search
+and retrieve Wikipedia articles autonomously during conversations.
+This only works with non-streaming responses.
 .El
 .Sh EXAMPLES
 Here's an example of how you might start this server:

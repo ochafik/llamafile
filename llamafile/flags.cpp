@@ -94,6 +94,10 @@ int FLAG_warmup = true;
 int FLAG_workers;
 unsigned FLAG_seed = LLAMA_DEFAULT_SEED;
 
+// ZIM archive support
+const char *FLAG_zim = nullptr;
+bool FLAG_zim_tools = false;
+
 std::vector<std::string> FLAG_headers;
 
 static wontreturn void usage(int rc, int fd) {
@@ -634,6 +638,21 @@ void llamafile_get_flags(int argc, char **argv) {
 
         if (!strcmp(flag, "--unsecure")) {
             FLAG_unsecure = true;
+            continue;
+        }
+
+        //////////////////////////////////////////////////////////////////////
+        // ZIM archive flags
+
+        if (!strcmp(flag, "--zim")) {
+            if (i == argc)
+                missing("--zim");
+            FLAG_zim = argv[i++];
+            continue;
+        }
+
+        if (!strcmp(flag, "--zim-tools")) {
+            FLAG_zim_tools = true;
             continue;
         }
 

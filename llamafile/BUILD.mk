@@ -24,6 +24,7 @@ $(LLAMAFILE_OBJS): private CCFLAGS += -g
 LLAMAFILE_OBJS := $(filter-out o/$(MODE)/llamafile/zipalign.o,$(LLAMAFILE_OBJS))
 
 include llamafile/highlight/BUILD.mk
+include llamafile/zim/BUILD.mk
 include llamafile/server/BUILD.mk
 
 o/$(MODE)/llamafile/zipalign:				\

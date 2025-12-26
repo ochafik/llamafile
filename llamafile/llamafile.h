@@ -65,6 +65,10 @@ extern int FLAG_warmup;
 extern int FLAG_workers;
 extern unsigned FLAG_seed;
 
+// ZIM archive support
+extern const char *FLAG_zim;
+extern bool FLAG_zim_tools;
+
 struct llamafile;
 struct llamafile *llamafile_open_gguf(const char *, const char *);
 void llamafile_close(struct llamafile *);

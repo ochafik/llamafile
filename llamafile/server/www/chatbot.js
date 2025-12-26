@@ -49,8 +49,15 @@ const completionsSettingsButton = document.getElementById("completions-settings-
 const completionsStopButton = document.getElementById("completions-stop-button");
 const uploadButton = document.getElementById("upload-button");
 const fileUpload = document.getElementById("file-upload");
+const wikiButton = document.getElementById("wiki-button");
+const wikiPanel = document.getElementById("wiki-panel");
+const wikiClose = document.getElementById("wiki-close");
+const wikiSearch = document.getElementById("wiki-search");
+const wikiResults = document.getElementById("wiki-results");
 
 let abortController = null;
+let zimAvailable = false;
+let wikiSearchTimeout = null;
 let disableAutoScroll = false;
 let streamingMessageContent = [];
 let originalLength = 0;
@@ -828,12 +835,123 @@ function onFileUploadChange(e) {
   }
 }
 
+// Wikipedia / ZIM integration
+async function checkZimAvailable() {
+  try {
+    const response = await fetch("/zim/metadata");
+    if (response.ok) {
+      zimAvailable = true;
+      wikiButton.style.display = "";
+    }
+  } catch (error) {
+    // ZIM not available, button stays hidden
+  }
+}
+
+function openWikiPanel() {
+  wikiPanel.style.display = "flex";
+  requestAnimationFrame(() => {
+    wikiPanel.classList.add("open");
+    wikiSearch.focus();
+  });
+}
+
+function closeWikiPanel() {
+  wikiPanel.classList.remove("open");
+  setTimeout(() => {
+    wikiPanel.style.display = "none";
+  }, 200);
+}
+
+async function searchWikipedia(query) {
+  if (!query.trim()) {
+    wikiResults.innerHTML = "";
+    return;
+  }
+  wikiResults.innerHTML = '<div class="wiki-loading">Searching...</div>';
+  try {
+    const response = await fetch("/zim/search?q=" + encodeURIComponent(query));
+    if (!response.ok) {
+      throw new Error("Search failed");
+    }
+    const results = await response.json();
+    displayWikiResults(results);
+  } catch (error) {
+    wikiResults.innerHTML = '<div class="wiki-error">Search failed. Please try again.</div>';
+  }
+}
+
+function displayWikiResults(results) {
+  if (!results || results.length === 0) {
+    wikiResults.innerHTML = '<div class="wiki-empty">No results found.</div>';
+    return;
+  }
+  wikiResults.innerHTML = "";
+  results.forEach(result => {
+    const item = document.createElement("div");
+    item.className = "wiki-result-item";
+    const title = document.createElement("div");
+    title.className = "wiki-result-title";
+    title.textContent = result.title || result.name || "Untitled";
+    item.appendChild(title);
+    if (result.snippet || result.description) {
+      const snippet = document.createElement("div");
+      snippet.className = "wiki-result-snippet";
+      snippet.textContent = result.snippet || result.description;
+      item.appendChild(snippet);
+    }
+    item.addEventListener("click", () => {
+      insertWikiReference(result.title || result.name || "Wikipedia");
+    });
+    wikiResults.appendChild(item);
+  });
+}
+
+function insertWikiReference(title) {
+  const reference = "[Wikipedia: " + title + "]";
+  insertText(chatInput, reference);
+  closeWikiPanel();
+  chatInput.focus();
+}
+
+function onWikiSearchInput(e) {
+  const query = e.target.value;
+  if (wikiSearchTimeout) {
+    clearTimeout(wikiSearchTimeout);
+  }
+  wikiSearchTimeout = setTimeout(() => {
+    searchWikipedia(query);
+  }, 300);
+}
+
+function setupWikipedia() {
+  wikiButton.addEventListener("click", openWikiPanel);
+  wikiClose.addEventListener("click", closeWikiPanel);
+  wikiSearch.addEventListener("input", onWikiSearchInput);
+  wikiSearch.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeWikiPanel();
+    }
+  });
+  // Close panel when clicking outside
+  document.addEventListener("click", (e) => {
+    if (wikiPanel.classList.contains("open") &&
+        !wikiPanel.contains(e.target) &&
+        e.target !== wikiButton &&
+        !wikiButton.contains(e.target)) {
+      closeWikiPanel();
+    }
+  });
+}
+
 async function chatbot() {
   flagz = await fetchFlagz();
   updateModelInfo();
   setupSettings();
   setupCompletions();
   setupMenu();
+  setupWikipedia();
+  checkZimAvailable();
   if (flagz.is_base_model || flagz.completion_mode) {
     setupCompletionsMode();
   } else {

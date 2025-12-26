@@ -743,6 +743,121 @@ pre .copy-button {
   margin-left: 0.2rem;
 }
 
+/* Wikipedia Panel */
+.wiki-panel {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 320px;
+  max-width: 100%;
+  background: white;
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.15);
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.2s ease-out;
+}
+
+.wiki-panel.open {
+  transform: translateX(0);
+}
+
+.wiki-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--medium-spacing) var(--large-spacing);
+  border-bottom: 1px solid #e9ecef;
+  background: #f8f9fa;
+}
+
+.wiki-panel-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #333;
+}
+
+.wiki-panel-header button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.wiki-search-container {
+  padding: var(--medium-spacing);
+  border-bottom: 1px solid #e9ecef;
+}
+
+#wiki-search {
+  width: 100%;
+  padding: var(--small-spacing) var(--medium-spacing);
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  outline: none;
+}
+
+#wiki-search:focus {
+  border-color: #86b7fe;
+  box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25);
+}
+
+.wiki-results {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--small-spacing);
+}
+
+.wiki-result-item {
+  padding: var(--medium-spacing);
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  margin-bottom: var(--small-spacing);
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.wiki-result-item:hover {
+  background: #f8f9fa;
+  border-color: #0d6efd;
+}
+
+.wiki-result-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #0d6efd;
+  margin-bottom: 4px;
+}
+
+.wiki-result-snippet {
+  font-size: 0.85rem;
+  color: #666;
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.wiki-loading,
+.wiki-error,
+.wiki-empty {
+  text-align: center;
+  padding: var(--large-spacing);
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.wiki-error {
+  color: #dc3545;
+}
+
 @media (max-width: 768px) {
   html {
     --large-spacing: 0.5rem;

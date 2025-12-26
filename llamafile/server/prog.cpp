@@ -21,6 +21,7 @@
 #include "llamafile/server/log.h"
 #include "llamafile/server/server.h"
 #include "llamafile/server/signals.h"
+#include "llamafile/server/zim.h"
 #include "llamafile/server/slots.h"
 #include "llamafile/server/time.h"
 #include "llamafile/server/tokenbucket.h"
@@ -107,6 +108,15 @@ main(int argc, char* argv[])
     for (int i = 0; i < FLAG_workers; ++i)
         npassert(!g_server->spawn());
 
+    // initialize ZIM archive if specified
+    if (FLAG_zim) {
+        if (zim_init(FLAG_zim)) {
+            SLOG("loaded zim archive: %s", FLAG_zim);
+        } else {
+            SLOG("warning: failed to load zim archive: %s", FLAG_zim);
+        }
+    }
+
     // run server
     signals_init();
     llama_backend_init();
@@ -121,6 +131,7 @@ main(int argc, char* argv[])
     delete g_server;
     delete slots;
     llama_free_model(model);
+    zim_shutdown();
     tokenbucket_destroy();
     time_destroy();
     SLOG("exit");

@@ -706,6 +706,20 @@ Client::dispatcher()
     if (p1 == "flagz")
         return flagz();
 
+    // ZIM archive endpoints
+    if (p1 == "zim/metadata")
+        return zim_metadata();
+    if (p1 == "zim/search")
+        return zim_search();
+    if (p1 == "zim/suggest")
+        return zim_suggest();
+    if (p1 == "zim/main")
+        return zim_main();
+    if (p1.starts_with("zim/article/"))
+        return zim_article();
+    if (p1.starts_with("zim/raw/"))
+        return zim_raw();
+
 #if 0
     // TODO: implement frontend for database
     if (p1 == "db/chats" || p1 == "db/chats/")

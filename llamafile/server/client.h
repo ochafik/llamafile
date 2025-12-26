@@ -125,6 +125,14 @@ struct Client
     bool db_chats() __wur;
     bool db_message(int64_t) __wur;
     bool db_messages(int64_t) __wur;
+
+    // ZIM archive endpoints
+    bool zim_metadata() __wur;
+    bool zim_search() __wur;
+    bool zim_suggest() __wur;
+    bool zim_article() __wur;
+    bool zim_raw() __wur;
+    bool zim_main() __wur;
 };
 
 } // namespace server

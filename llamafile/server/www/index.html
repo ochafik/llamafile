@@ -39,6 +39,7 @@
       <button class="stop-button" id="stop-button" style="display:none">Stop</button>
       <div class="chat-input-button-row">
         <button class="settings-button" id="settings-button" title="Settings"><img src="gear.svg" alt="[settings]"></button>
+        <button class="wiki-button" id="wiki-button" title="Wikipedia" style="display:none"><img src="wiki.svg" alt="[wikipedia]"></button>
         <button class="redo-button" id="redo-button" title="Redo last message"><img src="redo.svg" alt="[redo]"></button>
         <button class="upload-button" id="upload-button" title="Upload"><img src="upload.svg" alt="[upload]"  ></button>
         <input type="file" id="file-upload" style="display: none">
@@ -99,6 +100,16 @@
       </div>
     </div>
   </div>
+</div>
+<div id="wiki-panel" class="wiki-panel" style="display:none">
+  <div class="wiki-panel-header">
+    <h3>Wikipedia Search</h3>
+    <button id="wiki-close"><img src="close.svg" alt="[x]" width="20" height="20"></button>
+  </div>
+  <div class="wiki-search-container">
+    <input type="text" id="wiki-search" placeholder="Search Wikipedia..." autocomplete="off">
+  </div>
+  <div class="wiki-results" id="wiki-results"></div>
 </div>
 <div id="bottom"></div>
 

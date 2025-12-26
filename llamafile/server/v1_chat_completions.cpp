@@ -30,6 +30,7 @@
 #include "llamafile/server/slots.h"
 #include "llamafile/server/utils.h"
 #include "llamafile/server/worker.h"
+#include "llamafile/server/zim_tools.h"
 #include "llamafile/string.h"
 #include "llamafile/vector.h"
 #include <cassert>
@@ -521,6 +522,21 @@ Client::v1_chat_completions()
     if (!get_v1_chat_completions_params(params))
         return false;
 
+    // inject ZIM tools system prompt if enabled
+    if (zim_tools_available()) {
+        std::string tool_prompt = get_zim_tools_system_prompt();
+        if (!tool_prompt.empty()) {
+            // Add to existing system message or create new one
+            if (!params->messages.empty() &&
+                params->messages[0].role == "system") {
+                params->messages[0].content += tool_prompt;
+            } else {
+                params->messages.insert(params->messages.begin(),
+                    llama_chat_msg{"system", tool_prompt});
+            }
+        }
+    }
+
     // create state and response objects
     V1ChatCompletionState* state = new V1ChatCompletionState;
     defer_cleanup(cleanup_state, state);
@@ -711,6 +727,20 @@ Client::v1_chat_completions()
     SLOG("predicted %d tokens finished on %s", //
          completion_tokens,
          finish_reason);
+
+    // handle tool invocations for non-streaming responses
+    if (!params->stream && zim_tools_available()) {
+        ToolInvocation invocation = detect_tool_invocation(response->content);
+        if (invocation.type != ToolInvocation::Type::NONE) {
+            SLOG("detected tool invocation: %s",
+                 invocation.type == ToolInvocation::Type::SEARCH ? "SEARCH" : "READ");
+            auto tool_result = execute_tool(invocation);
+            if (tool_result) {
+                // Append tool result to the response
+                response->content += "\n" + *tool_result;
+            }
+        }
+    }
 
     // finalize response
     cleanup_slot(this);

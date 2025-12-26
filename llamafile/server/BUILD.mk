@@ -19,6 +19,7 @@ o/$(MODE)/llamafile/server/main:						\
 		o/$(MODE)/llamafile/server/main.o				\
 		o/$(MODE)/llamafile/server/main.1.asc.zip.o			\
 		o/$(MODE)/llamafile/server/server.a				\
+		o/$(MODE)/llamafile/zim/zim.a					\
 		o/$(MODE)/llama.cpp/llama.cpp.a					\
 		o/$(MODE)/llama.cpp/llava/llava.a				\
 		o/$(MODE)/third_party/double-conversion/double-conversion.a	\
@@ -52,6 +53,12 @@ o/$(MODE)/llamafile/server/tokenbucket_test:					\
 		o/$(MODE)/llamafile/server/log.o				\
 		o/$(MODE)/llama.cpp/llama.cpp.a					\
 
+o/$(MODE)/llamafile/server/zim_tools_test:					\
+		o/$(MODE)/llamafile/server/zim_tools_test.o			\
+		o/$(MODE)/llamafile/server/zim_tools.o				\
+		o/$(MODE)/llamafile/server/zim.o				\
+		o/$(MODE)/llamafile/zim/zim.a					\
+
 .PHONY: o/$(MODE)/llamafile/server
 o/$(MODE)/llamafile/server:							\
 		o/$(MODE)/llamafile/server/main					\
@@ -59,3 +66,4 @@ o/$(MODE)/llamafile/server:							\
 		o/$(MODE)/llamafile/server/fastjson_test.runs			\
 		o/$(MODE)/llamafile/server/image_test.runs			\
 		o/$(MODE)/llamafile/server/tokenbucket_test.runs		\
+		o/$(MODE)/llamafile/server/zim_tools_test.runs		\
