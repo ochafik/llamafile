@@ -16,10 +16,10 @@
 // limitations under the License.
 
 #include "chatbot.h"
-#include "llama.cpp/base64.h"
+#include "llama.cpp/common/base64.hpp"
 #include "llama.cpp/common.h"
-#include "llama.cpp/llama.h"
-#include "llama.cpp/llava/llava.h"
+#include "llama.cpp/include/llama.h"
+#include "llama.cpp/tools/mtmd/clip.h"
 #include "llamafile/datauri.h"
 #include "llamafile/image.h"
 #include "llamafile/llama.h"

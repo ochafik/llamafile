@@ -16,8 +16,8 @@
 // limitations under the License.
 
 #include "client.h"
-#include "llama.cpp/llama.h"
-#include "llama.cpp/sampling.h"
+#include "llama.cpp/include/llama.h"
+#include "llama.cpp/common/sampling.h"
 #include "llamafile/json.h"
 #include "llamafile/llama.h"
 #include "llamafile/macros.h"

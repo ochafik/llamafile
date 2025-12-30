@@ -20,7 +20,7 @@
 #include <cassert>
 #include <vector>
 
-#include "llama.cpp/llama.h"
+#include "llama.cpp/include/llama.h"
 #include "llamafile/color.h"
 #include "llamafile/llama.h"
 #include "llamafile/macros.h"

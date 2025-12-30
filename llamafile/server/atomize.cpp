@@ -16,7 +16,7 @@
 // limitations under the License.
 
 #include "atom.h"
-#include "llama.cpp/base64.h"
+#include "llama.cpp/common/base64.hpp"
 #include "llamafile/chatbot.h"
 #include "llamafile/datauri.h"
 #include "llamafile/image.h"

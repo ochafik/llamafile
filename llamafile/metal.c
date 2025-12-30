@@ -15,7 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "llama.cpp/ggml-metal.h"
+#include "llama.cpp/ggml/include/ggml-metal.h"
 #include "llamafile.h"
 #include "log.h"
 #include <assert.h>
@@ -66,16 +66,16 @@ ggml_backend_t ggml_backend_reg_metal_init(const char *, void *);
 static struct Metal {
     bool supported;
     atomic_uint once;
-    typeof(ggml_metal_link) *ggml_metal_link;
+    // typeof(ggml_metal_link) *ggml_metal_link;  // Removed: API changed
     typeof(ggml_backend_metal_init) *backend_init;
-    typeof(ggml_backend_metal_buffer_type) *GGML_CALL backend_buffer_type;
-    typeof(ggml_backend_metal_buffer_from_ptr) *GGML_CALL backend_buffer_from_ptr;
+    // typeof(ggml_backend_metal_buffer_type) *GGML_CALL backend_buffer_type;  // Removed: API changed
+    // typeof(ggml_backend_metal_buffer_from_ptr) *GGML_CALL backend_buffer_from_ptr;  // Removed: API changed
     typeof(ggml_backend_is_metal) *backend_is_metal;
-    typeof(ggml_backend_metal_set_n_cb) *backend_set_n_cb;
-    typeof(ggml_backend_metal_log_set_callback) *log_set_callback;
+    // typeof(ggml_backend_metal_set_n_cb) *backend_set_n_cb;  // Removed: API changed
+    typeof(ggml_backend_metal_set_abort_callback) *set_abort_callback;  // Changed from log_set_callback
     typeof(ggml_backend_reg_metal_init) *reg_init;
-    typeof(ggml_backend_metal_get_device_properties) *get_device_properties;
-    typeof(ggml_backend_metal_get_device_memory_usage) *get_device_memory_usage;
+    // typeof(ggml_backend_metal_get_device_properties) *get_device_properties;  // Removed: API changed
+    // typeof(ggml_backend_metal_get_device_memory_usage) *get_device_memory_usage;  // Removed: API changed
     typeof(ggml_backend_metal_supports_family) *supports_family;
 } ggml_metal;
 
@@ -211,25 +211,23 @@ static bool LinkMetal(const char *dso) {
 
     // import functions
     bool ok = true;
-    ok &= !!(ggml_metal.ggml_metal_link = cosmo_dlsym(lib, "ggml_metal_link"));
+    // ok &= !!(ggml_metal.ggml_metal_link = cosmo_dlsym(lib, "ggml_metal_link"));  // Removed: API changed
     ok &= !!(ggml_metal.backend_init = cosmo_dlsym(lib, "ggml_backend_metal_init"));
-    ok &= !!(ggml_metal.backend_buffer_type = cosmo_dlsym(lib, "ggml_backend_metal_buffer_type"));
-    ok &= !!(ggml_metal.backend_buffer_from_ptr =
-                 cosmo_dlsym(lib, "ggml_backend_metal_buffer_from_ptr"));
+    // ok &= !!(ggml_metal.backend_buffer_type = cosmo_dlsym(lib, "ggml_backend_metal_buffer_type"));  // Removed: API changed
+    // ok &= !!(ggml_metal.backend_buffer_from_ptr = cosmo_dlsym(lib, "ggml_backend_metal_buffer_from_ptr"));  // Removed: API changed
     ok &= !!(ggml_metal.backend_is_metal = cosmo_dlsym(lib, "ggml_backend_is_metal"));
-    ok &= !!(ggml_metal.backend_set_n_cb = cosmo_dlsym(lib, "ggml_backend_metal_set_n_cb"));
-    ok &= !!(ggml_metal.log_set_callback = cosmo_dlsym(lib, "ggml_backend_metal_log_set_callback"));
+    // ok &= !!(ggml_metal.backend_set_n_cb = cosmo_dlsym(lib, "ggml_backend_metal_set_n_cb"));  // Removed: API changed
+    ok &= !!(ggml_metal.set_abort_callback = cosmo_dlsym(lib, "ggml_backend_metal_set_abort_callback"));  // Changed function name
     ok &= !!(ggml_metal.reg_init = cosmo_dlsym(lib, "ggml_backend_reg_metal_init"));
-    ok &= !!(ggml_metal.get_device_properties = cosmo_dlsym(lib, "ggml_backend_metal_get_device_properties"));
-    ok &= !!(ggml_metal.get_device_memory_usage = cosmo_dlsym(lib, "ggml_backend_metal_get_device_memory_usage"));
+    // ok &= !!(ggml_metal.get_device_properties = cosmo_dlsym(lib, "ggml_backend_metal_get_device_properties"));  // Removed: API changed
+    // ok &= !!(ggml_metal.get_device_memory_usage = cosmo_dlsym(lib, "ggml_backend_metal_get_device_memory_usage"));  // Removed: API changed
     ok &= !!(ggml_metal.supports_family = cosmo_dlsym(lib, "ggml_backend_metal_supports_family"));
     if (!ok) {
         tinylog(Dlerror(), ": not all symbols could be imported\n", NULL);
         return false;
     }
 
-    // we're good
-    ggml_metal.ggml_metal_link(ggml_backend_api());
+    // we're good - no more ggml_backend_api() call needed
     return true;
 }
 
@@ -290,18 +288,22 @@ ggml_backend_t ggml_backend_metal_init(void) {
     return ggml_metal.backend_init();
 }
 
-GGML_CALL ggml_backend_buffer_type_t ggml_backend_metal_buffer_type(void) {
-    if (!llamafile_has_metal())
-        return 0;
-    return ggml_metal.backend_buffer_type();
-}
+// Removed: ggml_backend_metal_buffer_type no longer exists
+// Use ggml_backend_get_default_buffer_type(backend) instead
+// GGML_CALL ggml_backend_buffer_type_t ggml_backend_metal_buffer_type(void) {
+//     if (!llamafile_has_metal())
+//         return 0;
+//     return ggml_metal.backend_buffer_type();
+// }
 
-GGML_CALL ggml_backend_buffer_t ggml_backend_metal_buffer_from_ptr(void *data, size_t size,
-                                                                   size_t max_size) {
-    if (!llamafile_has_metal())
-        return 0;
-    return ggml_metal.backend_buffer_from_ptr(data, size, max_size);
-}
+// Removed: ggml_backend_metal_buffer_from_ptr no longer exists
+// Use ggml_backend_cpu_buffer_from_ptr instead
+// GGML_CALL ggml_backend_buffer_t ggml_backend_metal_buffer_from_ptr(void *data, size_t size,
+//                                                                    size_t max_size) {
+//     if (!llamafile_has_metal())
+//         return 0;
+//     return ggml_metal.backend_buffer_from_ptr(data, size, max_size);
+// }
 
 bool ggml_backend_is_metal(ggml_backend_t backend) {
     if (!llamafile_has_metal())
@@ -309,16 +311,18 @@ bool ggml_backend_is_metal(ggml_backend_t backend) {
     return ggml_metal.backend_is_metal(backend);
 }
 
-void ggml_backend_metal_set_n_cb(ggml_backend_t backend, int n_cb) {
-    if (!llamafile_has_metal())
-        return;
-    return ggml_metal.backend_set_n_cb(backend, n_cb);
-}
+// Removed: ggml_backend_metal_set_n_cb no longer exists
+// void ggml_backend_metal_set_n_cb(ggml_backend_t backend, int n_cb) {
+//     if (!llamafile_has_metal())
+//         return;
+//     return ggml_metal.backend_set_n_cb(backend, n_cb);
+// }
 
-void ggml_backend_metal_log_set_callback(ggml_log_callback log_callback, void *user_data) {
+// Changed: ggml_backend_metal_log_set_callback → ggml_backend_metal_set_abort_callback
+void ggml_backend_metal_set_abort_callback(ggml_backend_t backend, ggml_abort_callback abort_callback, void *user_data) {
     if (!llamafile_has_metal())
         return;
-    return ggml_metal.log_set_callback(log_callback, user_data);
+    return ggml_metal.set_abort_callback(backend, abort_callback, user_data);
 }
 
 ggml_backend_t ggml_backend_reg_metal_init(const char *params, void *user_data) {
@@ -327,17 +331,19 @@ ggml_backend_t ggml_backend_reg_metal_init(const char *params, void *user_data) 
     return ggml_metal.reg_init(params, user_data);
 }
 
-void ggml_backend_metal_get_device_properties(ggml_backend_t backend, struct ggml_metal_device_properties *properties) {
-    if (!llamafile_has_metal())
-        return;
-    return ggml_metal.get_device_properties(backend, properties);
-}
+// Removed: ggml_backend_metal_get_device_properties no longer exists
+// void ggml_backend_metal_get_device_properties(ggml_backend_t backend, struct ggml_metal_device_properties *properties) {
+//     if (!llamafile_has_metal())
+//         return;
+//     return ggml_metal.get_device_properties(backend, properties);
+// }
 
-void ggml_backend_metal_get_device_memory_usage(ggml_backend_t backend, float *used, float *total) {
-    if (!llamafile_has_metal())
-        return;
-    return ggml_metal.get_device_memory_usage(backend, used, total);
-}
+// Removed: ggml_backend_metal_get_device_memory_usage no longer exists
+// void ggml_backend_metal_get_device_memory_usage(ggml_backend_t backend, float *used, float *total) {
+//     if (!llamafile_has_metal())
+//         return;
+//     return ggml_metal.get_device_memory_usage(backend, used, total);
+// }
 
 bool ggml_backend_metal_supports_family(ggml_backend_t backend, int family) {
     if (!llamafile_has_metal())

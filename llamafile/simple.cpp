@@ -15,90 +15,101 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <cmath>
 #include <cosmo.h>
 #include <cstdio>
 #include <string>
 #include <vector>
 
-#include "llama.cpp/common.h"
-#include "llama.cpp/llama.h"
+#include "llama.cpp/common/arg.h"
+#include "llama.cpp/common/common.h"
+#include "llama.cpp/common/sampling.h"
+#include "llama.cpp/include/llama.h"
 #include "llamafile/llamafile.h"
-
-static bool eval_tokens(struct llama_context *ctx_llama, std::vector<llama_token> tokens,
-                        int n_batch, int *n_past) {
-    int N = (int)tokens.size();
-    for (int i = 0; i < N; i += n_batch) {
-        int n_eval = (int)tokens.size() - i;
-        if (n_eval > n_batch)
-            n_eval = n_batch;
-        if (llama_decode(ctx_llama, llama_batch_get_one(&tokens[i], n_eval, *n_past, 0)))
-            return false; // probably ran out of context
-        *n_past += n_eval;
-    }
-    return true;
-}
-
-static bool eval_id(struct llama_context *ctx_llama, int id, int *n_past) {
-    std::vector<llama_token> tokens;
-    tokens.push_back(id);
-    return eval_tokens(ctx_llama, tokens, 1, n_past);
-}
-
-static bool eval_string(struct llama_context *ctx_llama, const char *str, int n_batch, int *n_past,
-                        bool add_bos) {
-    std::string str2 = str;
-    std::vector<llama_token> embd_inp = ::llama_tokenize(ctx_llama, str2, add_bos);
-    return eval_tokens(ctx_llama, embd_inp, n_batch, n_past);
-}
 
 int main(int argc, char **argv) {
 
     llamafile_check_cpu();
     ShowCrashReports();
-    log_disable();
 
-    gpt_params params;
+    common_params params;
     params.n_ctx = 0;
 
-    if (!gpt_params_parse(argc, argv, params))
+    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_COMPLETION))
         return 1;
 
     if (params.prompt.empty())
         params.prompt = "The";
 
+    common_init();
     llama_backend_init();
+    llama_numa_init(params.numa);
 
-    llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = llamafile_gpu_layers(35);
-    llama_model *model = llama_load_model_from_file(params.model.c_str(), model_params);
+    ggml_backend_load_all();
+
+    // Update n_gpu_layers for llamafile
+    params.n_gpu_layers = llamafile_gpu_layers(35);
+
+    // Use common_init_from_params to initialize model, context, and sampler
+    common_init_result_ptr common_init = common_init_from_params(params);
+
+    llama_model *model = common_init->model();
+    llama_context *ctx = common_init->context();
+    common_sampler *smpl = common_init->sampler(0);
+
     if (model == NULL)
         return 2;
-
-    llama_context_params ctx_params = llama_context_params_from_gpt_params(params);
-    llama_context *ctx = llama_new_context_with_model(model, ctx_params);
     if (ctx == NULL)
         return 3;
 
+    const struct llama_vocab *vocab = llama_model_get_vocab(model);
+
     printf("%s", params.prompt.c_str());
+
+    // Tokenize the prompt
+    const int n_prompt = -llama_tokenize(vocab, params.prompt.c_str(), params.prompt.size(), NULL, 0, true, true);
+    std::vector<llama_token> prompt_tokens(n_prompt);
+    if (llama_tokenize(vocab, params.prompt.c_str(), params.prompt.size(), prompt_tokens.data(), prompt_tokens.size(), true, true) < 0)
+        return 4;
+
+    // Evaluate prompt tokens
     int n_past = 0;
-    bool add_bos = llama_should_add_bos_token(llama_get_model(ctx));
-    eval_string(ctx, params.prompt.c_str(), params.n_batch, &n_past, add_bos);
-    struct llama_sampling_context *ctx_sampling = llama_sampling_init(params.sparams);
+    for (int i = 0; i < (int)prompt_tokens.size(); i += params.n_batch) {
+        int n_eval = (int)prompt_tokens.size() - i;
+        if (n_eval > params.n_batch)
+            n_eval = params.n_batch;
+        struct llama_batch batch = llama_batch_get_one(&prompt_tokens[i], n_eval);
+        batch.pos[0] = n_past;
+        if (llama_decode(ctx, batch))
+            break;
+        n_past += n_eval;
+    }
+
+    // Main generation loop
     for (;;) {
-        llama_token id = llama_sampling_sample(ctx_sampling, ctx, NULL);
-        llama_sampling_accept(ctx_sampling, ctx, id, true);
-        if (llama_token_is_eog(model, id))
+        llama_token id = common_sampler_sample(smpl, ctx, 0);
+        if (llama_vocab_is_eog(vocab, id))
             break;
-        printf("%s", llama_token_to_piece(ctx, id).c_str());
+
+        common_sampler_accept(smpl, id, true);
+
+        char buf[128];
+        int n = llama_token_to_piece(vocab, id, buf, sizeof(buf), 0, true);
+        if (n < 0)
+            break;
+        std::string s(buf, n);
+        printf("%s", s.c_str());
         fflush(stdout);
-        if (!eval_id(ctx, id, &n_past))
+
+        // Evaluate the new token
+        struct llama_batch batch = llama_batch_get_one(&id, 1);
+        batch.pos[0] = n_past;
+        if (llama_decode(ctx, batch))
             break;
+        n_past += 1;
     }
     printf("\n");
 
-    llama_sampling_free(ctx_sampling);
-    llama_free(ctx);
-    llama_free_model(model);
-    llama_backend_free();
+    // Cleanup is handled automatically by common_init_result destructor
+
+    return 0;
 }

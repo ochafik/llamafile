@@ -24,7 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "llama.cpp/llama.h"
+#include "llama.cpp/include/llama.h"
 
 int main(int argc, char **argv) {
     llamafile_check_cpu();

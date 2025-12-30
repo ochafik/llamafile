@@ -16,8 +16,8 @@
 // limitations under the License.
 
 #include "slot.h"
-#include "llama.cpp/llava/clip.h"
-#include "llama.cpp/llava/llava.h"
+#include "llama.cpp/tools/mtmd/clip.h"
+#include "llama.cpp/tools/mtmd/clip.h"
 #include "llamafile/image.h"
 #include "llamafile/llama.h"
 #include "llamafile/llamafile.h"

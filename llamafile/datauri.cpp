@@ -16,7 +16,7 @@
 // limitations under the License.
 
 #include "datauri.h"
-#include "llama.cpp/base64.h"
+#include "llama.cpp/common/base64.hpp"
 #include "llamafile/string.h"
 #include <cctype>
 

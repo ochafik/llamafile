@@ -21,7 +21,7 @@
 #include <sstream>
 #include <vector>
 
-#include "llama.cpp/llama.h"
+#include "llama.cpp/include/llama.h"
 #include "llamafile/llamafile.h"
 
 namespace lf {

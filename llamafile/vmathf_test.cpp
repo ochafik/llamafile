@@ -25,7 +25,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include "llama.cpp/ggml-vector.h"
+#include "llama.cpp/ggml/src/ggml-cpu/ggml-vect.h"
 
 extern "C" void ggml_vec_gelu_f32_amd_avx512bf16(const int n, float *y, const float *x);
 extern "C" void ggml_vec_gelu_f32_amd_avx512vl(const int n, float *y, const float *x);

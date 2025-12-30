@@ -15,7 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "llama.cpp/llama.h"
+#include "llama.cpp/include/llama.h"
 #include "llamafile/llamafile.h"
 #include "llamafile/pool.h"
 #include "llamafile/server/log.h"

@@ -17,7 +17,7 @@
 
 #include "llamafile/db.h"
 #include "client.h"
-#include "llama.cpp/llama.h"
+#include "llama.cpp/include/llama.h"
 #include "llamafile/llamafile.h"
 #include "llamafile/string.h"
 #include <string>

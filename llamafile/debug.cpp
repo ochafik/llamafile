@@ -29,7 +29,7 @@
 #include <ucontext.h>
 #include <unistd.h>
 
-#include "llama.cpp/ggml.h"
+#include "llama.cpp/ggml/include/ggml.h"
 
 #define TRAPS (FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW)
 #define UNDERFLOW_ALARM "\e[s\e[H\e[7;1;49;31mUNDERFLOW\e[0m\e[u"

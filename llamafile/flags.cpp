@@ -32,8 +32,8 @@
 #include <unistd.h>
 #include <vector>
 
-#include "llama.cpp/cores.h"
-#include "llama.cpp/llama.h"
+#include "llama.cpp/cores.cpp"
+#include "llama.cpp/include/llama.h"
 #include "llamafile/macros.h"
 
 bool FLAGS_READY = false;

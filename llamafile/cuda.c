@@ -15,7 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "llama.cpp/ggml-backend-impl.h"
+#include "llama.cpp/ggml/src/ggml-backend-impl.h"
 #include "llama.cpp/ggml/include/ggml-cuda.h"
 #include "llama.cpp/ggml/include/ggml-metal.h"
 #include "llamafile/llamafile.h"
@@ -105,13 +105,13 @@ static struct Cuda {
     bool supported;
     bool has_amd_gpu;
     atomic_uint once;
-    typeof(ggml_cuda_link) *GGML_CALL link;
+    // typeof(ggml_cuda_link) *GGML_CALL link;  // Removed: API changed
     typeof(ggml_backend_cuda_buffer_type) *GGML_CALL buffer_type;
     typeof(ggml_backend_cuda_host_buffer_type) *GGML_CALL host_buffer_type;
     typeof(ggml_backend_cuda_init) *GGML_CALL backend_init;
     typeof(ggml_backend_cuda_split_buffer_type) *GGML_CALL split_buffer_type;
-    typeof(ggml_backend_cuda_reg_devices) *GGML_CALL reg_devices;
-    typeof(ggml_backend_cuda_get_device_properties) *GGML_CALL get_device_properties;
+    // typeof(ggml_backend_cuda_reg_devices) *GGML_CALL reg_devices;  // Removed: API changed
+    // typeof(ggml_backend_cuda_get_device_properties) *GGML_CALL get_device_properties;  // Removed: API changed
     typeof(ggml_backend_cuda_get_device_memory) *GGML_CALL get_device_memory;
     typeof(ggml_backend_cuda_get_device_count) *GGML_CALL get_device_count;
     typeof(ggml_backend_cuda_unregister_host_buffer) *GGML_CALL unreg_host_buf;
@@ -723,13 +723,13 @@ static bool link_cuda_dso(const char *dso, const char *dir) {
 
     // import functions
     bool ok = true;
-    ok &= !!(ggml_cuda.link = imp(lib, "ggml_cuda_link"));
+    // ok &= !!(ggml_cuda.link = imp(lib, "ggml_cuda_link"));  // Removed: API changed
     ok &= !!(ggml_cuda.host_buffer_type = imp(lib, "ggml_backend_cuda_host_buffer_type"));
     ok &= !!(ggml_cuda.buffer_type = imp(lib, "ggml_backend_cuda_buffer_type"));
     ok &= !!(ggml_cuda.backend_init = imp(lib, "ggml_backend_cuda_init"));
     ok &= !!(ggml_cuda.split_buffer_type = imp(lib, "ggml_backend_cuda_split_buffer_type"));
-    ok &= !!(ggml_cuda.reg_devices = imp(lib, "ggml_backend_cuda_reg_devices"));
-    ok &= !!(ggml_cuda.get_device_properties= imp(lib, "ggml_backend_cuda_get_device_properties"));
+    // ok &= !!(ggml_cuda.reg_devices = imp(lib, "ggml_backend_cuda_reg_devices"));  // Removed: API changed
+    // ok &= !!(ggml_cuda.get_device_properties= imp(lib, "ggml_backend_cuda_get_device_properties"));  // Removed: API changed
     ok &= !!(ggml_cuda.get_device_memory = imp(lib, "ggml_backend_cuda_get_device_memory"));
     ok &= !!(ggml_cuda.get_device_count = imp(lib, "ggml_backend_cuda_get_device_count"));
     ok &= !!(ggml_cuda.unreg_host_buf = imp(lib, "ggml_backend_cuda_unregister_host_buffer"));
@@ -741,8 +741,8 @@ static bool link_cuda_dso(const char *dso, const char *dir) {
         return false;
     }
 
-    // ask the library if actual gpu devices exist
-    if (ggml_cuda.link(ggml_backend_api())) {
+    // Check if GPU devices exist by checking device count
+    if (ggml_cuda.get_device_count() > 0) {
         tinylog(__func__, ": GPU support loaded\n", NULL);
         return true;
     } else {
@@ -999,23 +999,25 @@ GGML_CALL ggml_backend_t ggml_backend_cuda_init(int device) {
 }
 
 GGML_CALL ggml_backend_buffer_type_t
-ggml_backend_cuda_split_buffer_type(const float *tensor_split) {
+ggml_backend_cuda_split_buffer_type(int main_device, const float *tensor_split) {
     if (!llamafile_has_cuda())
         return 0;
-    return ggml_cuda.split_buffer_type(tensor_split);
+    return ggml_cuda.split_buffer_type(main_device, tensor_split);
 }
 
-GGML_CALL int ggml_backend_cuda_reg_devices(void) {
-    if (!llamafile_has_cuda())
-        return 0;
-    return ggml_cuda.reg_devices();
-}
+// Removed: ggml_backend_cuda_reg_devices no longer exists in new API
+// GGML_CALL int ggml_backend_cuda_reg_devices(void) {
+//     if (!llamafile_has_cuda())
+//         return 0;
+//     return ggml_cuda.reg_devices();
+// }
 
-GGML_CALL void ggml_backend_cuda_get_device_properties(int device, struct ggml_cuda_device_properties * properties) {
-    if (!llamafile_has_cuda())
-        return;
-    return ggml_cuda.get_device_properties(device, properties);
-}
+// Removed: ggml_backend_cuda_get_device_properties no longer exists in new API
+// GGML_CALL void ggml_backend_cuda_get_device_properties(int device, struct ggml_cuda_device_properties * properties) {
+//     if (!llamafile_has_cuda())
+//         return;
+//     return ggml_cuda.get_device_properties(device, properties);
+// }
 
 GGML_CALL void ggml_backend_cuda_get_device_memory(int device, size_t *free, size_t *total) {
     if (!llamafile_has_cuda())

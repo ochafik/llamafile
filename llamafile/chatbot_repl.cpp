@@ -23,7 +23,7 @@
 #include <string_view>
 
 #include "llama.cpp/common.h"
-#include "llama.cpp/llama.h"
+#include "llama.cpp/include/llama.h"
 #include "llamafile/bestline.h"
 #include "llamafile/color.h"
 #include "llamafile/highlight/highlight.h"

@@ -16,7 +16,7 @@
 // limitations under the License.
 
 #include "llama.h"
-#include "llama.cpp/llama.h"
+#include "llama.cpp/include/llama.h"
 #include <cassert>
 #include <string>
 #include <vector>
