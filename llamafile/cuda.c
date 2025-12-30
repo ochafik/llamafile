@@ -16,8 +16,8 @@
 // limitations under the License.
 
 #include "llama.cpp/ggml-backend-impl.h"
-#include "llama.cpp/ggml-cuda.h"
-#include "llama.cpp/ggml-metal.h"
+#include "llama.cpp/ggml/include/ggml-cuda.h"
+#include "llama.cpp/ggml/include/ggml-metal.h"
 #include "llamafile/llamafile.h"
 #include "llamafile/log.h"
 #include "llamafile/x.h"
@@ -44,7 +44,7 @@ __static_yoink("llamafile/tinyblas.h");
 __static_yoink("llamafile/tinyblas.cu");
 __static_yoink("llama.cpp/ggml-impl.h");
 __static_yoink("llamafile/llamafile.h");
-__static_yoink("llama.cpp/ggml-cuda.h");
+__static_yoink("llama.cpp/ggml/include/ggml-cuda.h");
 __static_yoink("llama.cpp/ggml-alloc.h");
 __static_yoink("llama.cpp/ggml-cuda.cu");
 __static_yoink("llama.cpp/ggml-common.h");
@@ -93,7 +93,7 @@ static const struct Source {
     {"/zip/llamafile/tinyblas.h", "tinyblas.h"},
     {"/zip/llamafile/tinyblas.cu", "tinyblas.cu"},
     {"/zip/llama.cpp/ggml-impl.h", "ggml-impl.h"},
-    {"/zip/llama.cpp/ggml-cuda.h", "ggml-cuda.h"},
+    {"/zip/llama.cpp/ggml/include/ggml-cuda.h", "ggml-cuda.h"},
     {"/zip/llama.cpp/ggml-alloc.h", "ggml-alloc.h"},
     {"/zip/llama.cpp/ggml-common.h", "ggml-common.h"},
     {"/zip/llama.cpp/ggml-backend.h", "ggml-backend.h"},

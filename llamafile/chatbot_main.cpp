@@ -24,7 +24,7 @@
 #include <vector>
 
 #include "llama.cpp/common.h"
-#include "llama.cpp/ggml-cuda.h"
+#include "llama.cpp/ggml/include/ggml-cuda.h"
 #include "llama.cpp/llava/clip.h"
 #include "llama.cpp/server/server.h"
 #include "llamafile/color.h"
