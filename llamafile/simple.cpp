@@ -21,9 +21,15 @@
 #include <string>
 #include <vector>
 
-#include "llama.cpp/common.h"
-#include "llama.cpp/llama.h"
+#include "llama.cpp/common/common.h"
+#include "llama.cpp/common/arg.h"
+#include "llama.cpp/common/sampling.h"
+#include "llama.cpp/include/llama.h"
 #include "llamafile/llamafile.h"
+#include "llamafile/log.h"
+
+// Forward declare ShowCrashReports from cosmopolitan libc
+extern "C" void ShowCrashReports(void);
 
 static bool eval_tokens(struct llama_context *ctx_llama, std::vector<llama_token> tokens,
                         int n_batch, int *n_past) {
@@ -32,7 +38,10 @@ static bool eval_tokens(struct llama_context *ctx_llama, std::vector<llama_token
         int n_eval = (int)tokens.size() - i;
         if (n_eval > n_batch)
             n_eval = n_batch;
-        if (llama_decode(ctx_llama, llama_batch_get_one(&tokens[i], n_eval, *n_past, 0)))
+        // New llama_batch_get_one API: only takes tokens and n_tokens
+        // pos is NULL by default, positions tracked automatically
+        struct llama_batch batch = llama_batch_get_one(tokens.data() + i, n_eval);
+        if (llama_decode(ctx_llama, batch))
             return false; // probably ran out of context
         *n_past += n_eval;
     }
@@ -48,7 +57,13 @@ static bool eval_id(struct llama_context *ctx_llama, int id, int *n_past) {
 static bool eval_string(struct llama_context *ctx_llama, const char *str, int n_batch, int *n_past,
                         bool add_bos) {
     std::string str2 = str;
-    std::vector<llama_token> embd_inp = ::llama_tokenize(ctx_llama, str2, add_bos);
+    // New llama_tokenize API: requires vocab* instead of model*
+    const struct llama_vocab * vocab = llama_model_get_vocab(llama_get_model(ctx_llama));
+    int n_tokens = str2.size() + 2 * add_bos;
+    std::vector<llama_token> embd_inp(n_tokens);
+    n_tokens = llama_tokenize(vocab, str2.data(), str2.size(), embd_inp.data(), embd_inp.size(),
+                              add_bos, false);
+    embd_inp.resize(n_tokens);
     return eval_tokens(ctx_llama, embd_inp, n_batch, n_past);
 }
 
@@ -56,12 +71,12 @@ int main(int argc, char **argv) {
 
     llamafile_check_cpu();
     ShowCrashReports();
-    log_disable();
+    FLAG_log_disable = true;
 
-    gpt_params params;
+    common_params params;
     params.n_ctx = 0;
 
-    if (!gpt_params_parse(argc, argv, params))
+    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_COMPLETION, nullptr))
         return 1;
 
     if (params.prompt.empty())
@@ -71,34 +86,44 @@ int main(int argc, char **argv) {
 
     llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = llamafile_gpu_layers(35);
-    llama_model *model = llama_load_model_from_file(params.model.c_str(), model_params);
+    llama_model *model = llama_model_load_from_file(params.model.path.c_str(), model_params);
     if (model == NULL)
         return 2;
 
-    llama_context_params ctx_params = llama_context_params_from_gpt_params(params);
-    llama_context *ctx = llama_new_context_with_model(model, ctx_params);
+    llama_context_params ctx_params = llama_context_default_params();
+    if (params.n_ctx != 0)
+        ctx_params.n_ctx = params.n_ctx;
+    llama_context *ctx = llama_init_from_model(model, ctx_params);
     if (ctx == NULL)
         return 3;
 
     printf("%s", params.prompt.c_str());
     int n_past = 0;
-    bool add_bos = llama_should_add_bos_token(llama_get_model(ctx));
+    // Use new llama_vocab_get_add_bos API
+    const struct llama_vocab * vocab = llama_model_get_vocab(model);
+    bool add_bos = llama_vocab_get_add_bos(vocab);
     eval_string(ctx, params.prompt.c_str(), params.n_batch, &n_past, add_bos);
-    struct llama_sampling_context *ctx_sampling = llama_sampling_init(params.sparams);
+
+    // Use new llama_sampler API
+    struct llama_sampler * smpl = llama_sampler_init_greedy();
     for (;;) {
-        llama_token id = llama_sampling_sample(ctx_sampling, ctx, NULL);
-        llama_sampling_accept(ctx_sampling, ctx, id, true);
-        if (llama_token_is_eog(model, id))
+        llama_token id = llama_sampler_sample(smpl, ctx, 0);
+        llama_sampler_accept(smpl, id);
+        // Use new llama_vocab_is_eog API
+        if (llama_vocab_is_eog(vocab, id))
             break;
-        printf("%s", llama_token_to_piece(ctx, id).c_str());
+        // Use new llama_token_to_piece API
+        char buf[256];
+        int n_chars = llama_token_to_piece(vocab, id, buf, sizeof(buf), 0, true);
+        printf("%.*s", n_chars, buf);
         fflush(stdout);
         if (!eval_id(ctx, id, &n_past))
             break;
     }
     printf("\n");
 
-    llama_sampling_free(ctx_sampling);
+    llama_sampler_free(smpl);
     llama_free(ctx);
-    llama_free_model(model);
+    llama_model_free(model);
     llama_backend_free();
 }

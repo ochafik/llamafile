@@ -15,7 +15,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "llama.cpp/ggml.h"
+#include "llama.cpp/ggml/include/ggml.h"
+#include "llamafile/llamafile.h"
 #include "llamafile/log.h"
 #include <cosmo.h>
 #include <errno.h>

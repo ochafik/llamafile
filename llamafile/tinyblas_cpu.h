@@ -40,8 +40,10 @@
 
 #pragma once
 
-#include "llama.cpp/ggml-impl.h"
-#include "llama.cpp/ggml-quants.h"
+#include "flags.h"
+#include "llamafile/llamafile.h"
+#include "llama.cpp/ggml/src/ggml-impl.h"
+#include "llama.cpp/ggml/src/ggml-quants.h"
 #include "log.h"
 #include "sgemm.h"
 #include <cosmo.h>

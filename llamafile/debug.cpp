@@ -15,6 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "llama.cpp/ggml/src/ggml-impl.h"
 #include "debug.h"
 #include "log.h"
 
@@ -28,8 +29,6 @@
 #include <termios.h>
 #include <ucontext.h>
 #include <unistd.h>
-
-#include "llama.cpp/ggml.h"
 
 #define TRAPS (FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW)
 #define UNDERFLOW_ALARM "\e[s\e[H\e[7;1;49;31mUNDERFLOW\e[0m\e[u"

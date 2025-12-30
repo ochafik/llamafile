@@ -38,13 +38,13 @@
 
 #include "localscore.h"
 
-#include "llama.cpp/cores.h"
-#include "llama.cpp/ggml.h"
-#include "llama.cpp/ggml-metal.h"
-#include "llama.cpp/llama.h"
-#include "llama.cpp/string.h"
-#include "llama.cpp/common.h"
-#include "llama.cpp/ggml-cuda.h"
+#include ".cores.h"
+#include ".ggml.h"
+#include ".ggml-metal.h"
+#include "llama.cpp/include/llama.h"
+#include ".string.h"
+#include ".common.h"
+#include ".ggml-cuda.h"
 
 #include "llamafile/llamafile.h"
 #include "llamafile/compute.h"

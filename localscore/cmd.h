@@ -2,7 +2,7 @@
 
 #include <string>
 #include <vector>
-#include "llama.cpp/llama.h"
+#include "llama.cpp/include/llama.h"
 
 enum output_formats {CSV, JSON, CONSOLE};
 enum send_results_mode {SEND_ASK, SEND_YES, SEND_NO};

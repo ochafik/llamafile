@@ -17,31 +17,41 @@
 
 #include "chatbot.h"
 
+#include "llama.cpp/common/arg.h"
+#include "llama.cpp/common/common.h"
+#include "llamafile/llamafile.h"
+#include "llamafile/version.h"
 #include <cosmo.h>
 #include <cstdio>
 #include <signal.h>
 #include <string>
 #include <vector>
 
-#include "llama.cpp/common.h"
-#include "llama.cpp/ggml-cuda.h"
-#include "llama.cpp/llava/clip.h"
+#include "llama.cpp/common/common.h"
+#include "llama.cpp/ggml/include/ggml-cuda.h"
+#include "llama.cpp/tools/mtmd/mtmd.h"
+#include "llama.cpp/tools/mtmd/mtmd-helper.h"
 #include "llama.cpp/server/server.h"
 #include "llamafile/color.h"
 #include "llamafile/compute.h"
 #include "llamafile/llama.h"
-#include "llamafile/string.h"
+#include "llamafile/strlib.h"
 
 namespace lf {
 namespace chatbot {
+
+static void print_usage(int argc, char ** argv) {
+    // The common_params_parse function will print detailed usage
+    // This is just a placeholder
+}
 
 struct ServerArgs {
     int argc;
     char **argv;
 };
 
-gpt_params g_params;
-clip_ctx *g_clip;
+common_params g_params;
+mtmd_context *g_mtmd;
 llama_model *g_model;
 llama_context *g_ctx;
 pthread_cond_t g_cond = PTHREAD_COND_INITIALIZER;
@@ -49,7 +59,7 @@ pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 std::string g_listen_url;
 
 std::string describe_compute(void) {
-    if (llama_n_gpu_layers(g_model) > 0 && llamafile_has_gpu()) {
+    if (g_params.n_gpu_layers > 0 && llamafile_has_gpu()) {
         if (llamafile_has_metal()) {
             return "Apple Metal GPU";
         } else {
@@ -118,13 +128,14 @@ int main(int argc, char **argv) {
 
     // override defaults for some flags
     g_params.n_batch = 256; // for better progress indication
-    g_params.sparams.temp = 0; // don't believe in randomness by default
+    g_params.sampling.temp = 0; // don't believe in randomness by default
+    g_params.main_gpu = FLAG_main_gpu; // use user-specified GPU
     g_params.prompt = DEFAULT_SYSTEM_PROMPT;
 
     // parse flags (sadly initializes gpu support as side-effect)
     print_ephemeral("loading backend...");
     llama_backend_init();
-    if (!gpt_params_parse(argc, argv, g_params)) { // also loads gpu module
+    if (!common_params_parse(argc, argv, g_params, LLAMA_EXAMPLE_CLI, print_usage)) { // also loads gpu module
         fprintf(stderr, "error: failed to parse flags\n");
         exit(1);
     }
@@ -132,19 +143,21 @@ int main(int argc, char **argv) {
 
     // setup logging
     FLAG_log_disable = false;
-    if (!g_params.verbosity)
-        log_disable();
 
     print_ephemeral("loading model...");
-    llama_model_params model_params = llama_model_params_from_gpt_params(g_params);
-    g_model = llama_load_model_from_file(g_params.model.c_str(), model_params);
+    llama_model_params model_params = llama_model_default_params();
+    model_params.n_gpu_layers = g_params.n_gpu_layers;
+    model_params.split_mode = g_params.split_mode;
+    model_params.main_gpu = g_params.main_gpu;
+    model_params.tensor_split = g_params.tensor_split;
+    g_model = llama_model_load_from_file(g_params.model.path.c_str(), model_params);
     clear_ephemeral();
     if (g_model == NULL) {
-        fprintf(stderr, "%s: failed to load model%s\n", g_params.model.c_str(), tip());
+        fprintf(stderr, "%s: failed to load model%s\n", g_params.model.path.c_str(), tip());
         exit(2);
     }
-    if (g_params.n_ctx <= 0 || g_params.n_ctx > llama_n_ctx_train(g_model))
-        g_params.n_ctx = llama_n_ctx_train(g_model);
+    if (g_params.n_ctx <= 0 || g_params.n_ctx > llama_model_n_ctx_train(g_model))
+        g_params.n_ctx = llama_model_n_ctx_train(g_model);
     if (g_params.n_ctx < g_params.n_batch)
         g_params.n_batch = g_params.n_ctx;
 
@@ -165,9 +178,9 @@ int main(int argc, char **argv) {
     }
 
     if (!FLAG_nologo) {
-        printf(BOLD "software" UNBOLD ": llamafile " LLAMAFILE_VERSION_STRING "\n" //
-               BOLD "model" UNBOLD ":    %s\n",
-               basename(g_params.model).c_str());
+        std::string version_str = std::string(BOLD "software" UNBOLD ": llamafile ") + LLAMAFILE_VERSION_STRING + "\n";
+        fputs(version_str.c_str(), stdout);
+        printf(BOLD "model" UNBOLD ":    %s\n", basename(g_params.model.path).c_str());
         if (is_base_model())
             printf(BOLD "mode" UNBOLD ":     RAW TEXT COMPLETION (base model)\n");
         printf(BOLD "compute" UNBOLD ":  %s\n", describe_compute().c_str());
@@ -177,8 +190,13 @@ int main(int argc, char **argv) {
     }
 
     print_ephemeral("initializing context...");
-    llama_context_params ctx_params = llama_context_params_from_gpt_params(g_params);
-    g_ctx = llama_new_context_with_model(g_model, ctx_params);
+    llama_context_params ctx_params = llama_context_default_params();
+    ctx_params.n_ctx = g_params.n_ctx;
+    ctx_params.n_batch = g_params.n_batch;
+    ctx_params.n_ubatch = g_params.n_ubatch;
+    ctx_params.n_threads = g_params.cpuparams.n_threads;
+    ctx_params.n_threads_batch = g_params.cpuparams_batch.n_threads;
+    g_ctx = llama_init_from_model(g_model, ctx_params);
     clear_ephemeral();
     if (!g_ctx) {
         fprintf(stderr, "error: failed to initialize context%s\n", tip());
@@ -188,21 +206,23 @@ int main(int argc, char **argv) {
     if (llama_model_has_encoder(g_model))
         fprintf(stderr, "warning: this model has an encoder\n");
 
-    if (FLAG_mmproj) {
+    if (!g_params.mmproj.path.empty() && !g_params.no_mmproj) {
         print_ephemeral("initializing vision model...");
-        g_clip = clip_model_load(FLAG_mmproj, g_params.verbosity);
+        mtmd_context_params mtmd_params = mtmd_context_params_default();
+        mtmd_params.n_threads = g_params.cpuparams_batch.n_threads;
+        g_mtmd = mtmd_init_from_file(g_params.mmproj.path.c_str(), g_model, mtmd_params);
         clear_ephemeral();
-        if (!g_clip) {
-            fprintf(stderr, "%s: failed to initialize clip image model%s\n", FLAG_mmproj, tip());
+        if (!g_mtmd) {
+            fprintf(stderr, "%s: failed to initialize mtmd vision model%s\n", g_params.mmproj.path.c_str(), tip());
             exit(4);
         }
     }
 
     repl();
 
-    if (g_clip) {
+    if (g_mtmd) {
         print_ephemeral("freeing vision model...");
-        clip_free(g_clip);
+        mtmd_free(g_mtmd);
         clear_ephemeral();
     }
 
@@ -211,7 +231,7 @@ int main(int argc, char **argv) {
     clear_ephemeral();
 
     print_ephemeral("freeing model...");
-    llama_free_model(g_model);
+    llama_model_free(g_model);
     clear_ephemeral();
 
     print_ephemeral("freeing backend...");

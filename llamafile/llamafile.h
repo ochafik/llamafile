@@ -6,6 +6,11 @@
 extern "C" {
 #endif
 
+// New llama.cpp doesn't use ms_abi calling convention, so LLAMAFILE_CALL is empty
+#define LLAMAFILE_CALL
+#define GGML_CALL LLAMAFILE_CALL
+#define GGML_BACKEND_API extern
+
 extern bool FLAGS_READY;
 extern bool FLAG_ascii;
 extern bool FLAG_completion_mode;

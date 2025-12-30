@@ -10,7 +10,10 @@ LLAMAFILE_SERVER_SRCS = $(filter %.cpp,$(LLAMAFILE_SERVER_FILES))
 LLAMAFILE_SERVER_OBJS = $(LLAMAFILE_SERVER_SRCS:%.cpp=o/$(MODE)/%.o)
 LLAMAFILE_SERVER_ASSETS = $(wildcard llamafile/server/www/*)
 
-$(LLAMAFILE_SERVER_OBJS): private CCFLAGS += -g
+# Include paths for mtmd API (from llama.cpp/tools/mtmd)
+LLAMAFILE_SERVER_INCLUDES = -Illama.cpp/tools/mtmd
+
+$(LLAMAFILE_SERVER_OBJS): private CCFLAGS += -g $(LLAMAFILE_SERVER_INCLUDES)
 
 o/$(MODE)/llamafile/server/server.a:						\
 		$(filter-out %_test.o,$(LLAMAFILE_SERVER_OBJS))
@@ -20,7 +23,7 @@ o/$(MODE)/llamafile/server/main:						\
 		o/$(MODE)/llamafile/server/main.1.asc.zip.o			\
 		o/$(MODE)/llamafile/server/server.a				\
 		o/$(MODE)/llama.cpp/llama.cpp.a					\
-		o/$(MODE)/llama.cpp/llava/llava.a				\
+		o/$(MODE)/llama.cpp/mtmd.a				\
 		o/$(MODE)/third_party/double-conversion/double-conversion.a	\
 		o/$(MODE)/third_party/stb/stb.a					\
 		o/$(MODE)/third_party/sqlite/sqlite3.a				\

@@ -26,7 +26,7 @@
 
 struct llama_context;
 struct llama_model;
-struct clip_ctx;
+struct mtmd_context;
 
 namespace lf {
 namespace server {
@@ -54,7 +54,7 @@ struct Slot
     Dll elem_;
     time_t last_used_;
     llama_model* model_;
-    clip_ctx* clip_ctx_ = nullptr;
+    mtmd_context* mtmd_ctx_ = nullptr;
     llama_context* ctx_ = nullptr;
     std::vector<Atom> history_;
     std::string system_fingerprint_;

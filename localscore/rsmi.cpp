@@ -2,7 +2,7 @@
 #include <dlfcn.h>
 
 #include "rsmi.h"
-#include "llama.cpp/common.h"
+#include ".common.h"
 
 #define IMPORT_RSMI_FUNCTION(func_name, func_type) \
     ok &= !!(rsmi.func_name = (func_type)(imp(lib, #func_name)))

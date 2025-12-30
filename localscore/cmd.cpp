@@ -1,7 +1,7 @@
 #include <algorithm>
 
 #include "cmd.h"
-#include "llama.cpp/cores.h"
+#include ".cores.h"
 #include "system.h"
 #include <cosmo.h>
 

@@ -19,4 +19,6 @@
 #include <__fwd/string.h>
 #include <__fwd/vector.h>
 
+// FLAG_precise is declared in llamafile.h with C linkage
+// Only declare C++-specific flags here
 extern std::vector<std::string> FLAG_headers;

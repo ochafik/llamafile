@@ -15,7 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "llama.cpp/ggml-metal.h"
+#include "llama.cpp/ggml/include/ggml-metal.h"
 #include "llamafile.h"
 #include "log.h"
 #include <assert.h>
@@ -32,51 +32,45 @@
 #include <time.h>
 #include <unistd.h>
 
-__static_yoink("llama.cpp/ggml.h");
+__static_yoink("llama.cpp/ggml/include/ggml.h");
 __static_yoink("llamafile/llamafile.h");
-__static_yoink("llama.cpp/ggml-impl.h");
-__static_yoink("llama.cpp/ggml-alloc.h");
+__static_yoink("llama.cpp/ggml/src/ggml-impl.h");
+__static_yoink("llama.cpp/ggml/include/ggml-alloc.h");
 __static_yoink("llama.cpp/ggml-metal.m");
-__static_yoink("llama.cpp/ggml-metal.h");
-__static_yoink("llama.cpp/ggml-common.h");
-__static_yoink("llama.cpp/ggml-quants.h");
-__static_yoink("llama.cpp/ggml-backend.h");
+__static_yoink("llama.cpp/ggml/include/ggml-metal.h");
+__static_yoink("llama.cpp/ggml/src/ggml-common.h");
+__static_yoink("llama.cpp/ggml/src/ggml-quants.h");
+__static_yoink("llama.cpp/ggml/include/ggml-backend.h");
 __static_yoink("llama.cpp/ggml-metal.metal");
-__static_yoink("llama.cpp/ggml-backend-impl.h");
+__static_yoink("llama.cpp/ggml/src/ggml-backend-impl.h");
 
 static const struct Source {
     const char *zip;
     const char *name;
 } srcs[] = {
-    {"/zip/llama.cpp/ggml.h", "ggml.h"},
+    {"/zip/llama.cpp/ggml/include/ggml.h", "ggml.h"},
     {"/zip/llamafile/llamafile.h", "llamafile.h"},
-    {"/zip/llama.cpp/ggml-impl.h", "ggml-impl.h"},
-    {"/zip/llama.cpp/ggml-metal.h", "ggml-metal.h"},
-    {"/zip/llama.cpp/ggml-alloc.h", "ggml-alloc.h"},
-    {"/zip/llama.cpp/ggml-common.h", "ggml-common.h"},
-    {"/zip/llama.cpp/ggml-quants.h", "ggml-quants.h"},
-    {"/zip/llama.cpp/ggml-backend.h", "ggml-backend.h"},
+    {"/zip/llama.cpp/ggml/src/ggml-impl.h", "ggml-impl.h"},
+    {"/zip/llama.cpp/ggml/include/ggml-metal.h", "ggml-metal.h"},
+    {"/zip/llama.cpp/ggml/include/ggml-alloc.h", "ggml-alloc.h"},
+    {"/zip/llama.cpp/ggml/src/ggml-common.h", "ggml-common.h"},
+    {"/zip/llama.cpp/ggml/src/ggml-quants.h", "ggml-quants.h"},
+    {"/zip/llama.cpp/ggml/include/ggml-backend.h", "ggml-backend.h"},
     {"/zip/llama.cpp/ggml-metal.metal", "ggml-metal.metal"},
-    {"/zip/llama.cpp/ggml-backend-impl.h", "ggml-backend-impl.h"},
+    {"/zip/llama.cpp/ggml/src/ggml-backend-impl.h", "ggml-backend-impl.h"},
     {"/zip/llama.cpp/ggml-metal.m", "ggml-metal.m"}, // must come last
 };
 
-ggml_backend_t ggml_backend_reg_metal_init(const char *, void *);
+ggml_backend_reg_t ggml_backend_metal_reg(void);
 
 static struct Metal {
     bool supported;
     atomic_uint once;
-    typeof(ggml_metal_link) *ggml_metal_link;
     typeof(ggml_backend_metal_init) *backend_init;
-    typeof(ggml_backend_metal_buffer_type) *GGML_CALL backend_buffer_type;
-    typeof(ggml_backend_metal_buffer_from_ptr) *GGML_CALL backend_buffer_from_ptr;
     typeof(ggml_backend_is_metal) *backend_is_metal;
-    typeof(ggml_backend_metal_set_n_cb) *backend_set_n_cb;
-    typeof(ggml_backend_metal_log_set_callback) *log_set_callback;
-    typeof(ggml_backend_reg_metal_init) *reg_init;
-    typeof(ggml_backend_metal_get_device_properties) *get_device_properties;
-    typeof(ggml_backend_metal_get_device_memory_usage) *get_device_memory_usage;
+    typeof(ggml_backend_metal_set_abort_callback) *set_abort_callback;
     typeof(ggml_backend_metal_supports_family) *supports_family;
+    typeof(ggml_backend_metal_capture_next_compute) *capture_next_compute;
 } ggml_metal;
 
 static const char *Dlerror(void) {
@@ -211,25 +205,16 @@ static bool LinkMetal(const char *dso) {
 
     // import functions
     bool ok = true;
-    ok &= !!(ggml_metal.ggml_metal_link = cosmo_dlsym(lib, "ggml_metal_link"));
     ok &= !!(ggml_metal.backend_init = cosmo_dlsym(lib, "ggml_backend_metal_init"));
-    ok &= !!(ggml_metal.backend_buffer_type = cosmo_dlsym(lib, "ggml_backend_metal_buffer_type"));
-    ok &= !!(ggml_metal.backend_buffer_from_ptr =
-                 cosmo_dlsym(lib, "ggml_backend_metal_buffer_from_ptr"));
     ok &= !!(ggml_metal.backend_is_metal = cosmo_dlsym(lib, "ggml_backend_is_metal"));
-    ok &= !!(ggml_metal.backend_set_n_cb = cosmo_dlsym(lib, "ggml_backend_metal_set_n_cb"));
-    ok &= !!(ggml_metal.log_set_callback = cosmo_dlsym(lib, "ggml_backend_metal_log_set_callback"));
-    ok &= !!(ggml_metal.reg_init = cosmo_dlsym(lib, "ggml_backend_reg_metal_init"));
-    ok &= !!(ggml_metal.get_device_properties = cosmo_dlsym(lib, "ggml_backend_metal_get_device_properties"));
-    ok &= !!(ggml_metal.get_device_memory_usage = cosmo_dlsym(lib, "ggml_backend_metal_get_device_memory_usage"));
+    ok &= !!(ggml_metal.set_abort_callback = cosmo_dlsym(lib, "ggml_backend_metal_set_abort_callback"));
     ok &= !!(ggml_metal.supports_family = cosmo_dlsym(lib, "ggml_backend_metal_supports_family"));
+    ok &= !!(ggml_metal.capture_next_compute = cosmo_dlsym(lib, "ggml_backend_metal_capture_next_compute"));
     if (!ok) {
         tinylog(Dlerror(), ": not all symbols could be imported\n", NULL);
         return false;
     }
 
-    // we're good
-    ggml_metal.ggml_metal_link(ggml_backend_api());
     return true;
 }
 
@@ -290,57 +275,26 @@ ggml_backend_t ggml_backend_metal_init(void) {
     return ggml_metal.backend_init();
 }
 
-GGML_CALL ggml_backend_buffer_type_t ggml_backend_metal_buffer_type(void) {
-    if (!llamafile_has_metal())
-        return 0;
-    return ggml_metal.backend_buffer_type();
-}
-
-GGML_CALL ggml_backend_buffer_t ggml_backend_metal_buffer_from_ptr(void *data, size_t size,
-                                                                   size_t max_size) {
-    if (!llamafile_has_metal())
-        return 0;
-    return ggml_metal.backend_buffer_from_ptr(data, size, max_size);
-}
-
 bool ggml_backend_is_metal(ggml_backend_t backend) {
     if (!llamafile_has_metal())
         return 0;
     return ggml_metal.backend_is_metal(backend);
 }
 
-void ggml_backend_metal_set_n_cb(ggml_backend_t backend, int n_cb) {
+void ggml_backend_metal_set_abort_callback(ggml_backend_t backend, ggml_abort_callback abort_callback, void *user_data) {
     if (!llamafile_has_metal())
         return;
-    return ggml_metal.backend_set_n_cb(backend, n_cb);
-}
-
-void ggml_backend_metal_log_set_callback(ggml_log_callback log_callback, void *user_data) {
-    if (!llamafile_has_metal())
-        return;
-    return ggml_metal.log_set_callback(log_callback, user_data);
-}
-
-ggml_backend_t ggml_backend_reg_metal_init(const char *params, void *user_data) {
-    if (!llamafile_has_metal())
-        return 0;
-    return ggml_metal.reg_init(params, user_data);
-}
-
-void ggml_backend_metal_get_device_properties(ggml_backend_t backend, struct ggml_metal_device_properties *properties) {
-    if (!llamafile_has_metal())
-        return;
-    return ggml_metal.get_device_properties(backend, properties);
-}
-
-void ggml_backend_metal_get_device_memory_usage(ggml_backend_t backend, float *used, float *total) {
-    if (!llamafile_has_metal())
-        return;
-    return ggml_metal.get_device_memory_usage(backend, used, total);
+    return ggml_metal.set_abort_callback(backend, abort_callback, user_data);
 }
 
 bool ggml_backend_metal_supports_family(ggml_backend_t backend, int family) {
     if (!llamafile_has_metal())
         return 0;
     return ggml_metal.supports_family(backend, family);
+}
+
+void ggml_backend_metal_capture_next_compute(ggml_backend_t backend) {
+    if (!llamafile_has_metal())
+        return;
+    return ggml_metal.capture_next_compute(backend);
 }

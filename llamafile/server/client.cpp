@@ -16,7 +16,7 @@
 // limitations under the License.
 
 #include "client.h"
-#include "llama.cpp/llama.h"
+#include "llama.cpp/include/llama.h"
 #include "llamafile/flags.h"
 #include "llamafile/llamafile.h"
 #include "llamafile/server/cleanup.h"
@@ -26,7 +26,7 @@
 #include "llamafile/server/tokenbucket.h"
 #include "llamafile/server/utils.h"
 #include "llamafile/server/worker.h"
-#include "llamafile/string.h"
+#include "llamafile/strlib.h"
 #include "llamafile/threadlocal.h"
 #include "llamafile/trust.h"
 #include "llamafile/version.h"

@@ -16,7 +16,7 @@
 // limitations under the License.
 
 #include "cleanup.h"
-#include "llama.cpp/llama.h"
+#include "llama.cpp/include/llama.h"
 #include <unistd.h>
 #include <vector>
 

@@ -16,10 +16,10 @@
 // limitations under the License.
 
 #include "slot.h"
-#include "llama.cpp/llava/clip.h"
-#include "llama.cpp/llava/llava.h"
+#include "llama.cpp/include/llama.h"
+#include "llama.cpp/tools/mtmd/mtmd.h"
+#include "llama.cpp/tools/mtmd/mtmd-helper.h"
 #include "llamafile/image.h"
-#include "llamafile/llama.h"
 #include "llamafile/llamafile.h"
 #include "llamafile/macros.h"
 #include "llamafile/server/atom.h"
@@ -38,7 +38,7 @@ namespace server {
 static int
 choose_ctx_size(llama_model* model)
 {
-    int n_ctx_train = llama_n_ctx_train(model);
+    int n_ctx_train = llama_model_n_ctx_train(model);
     if (FLAG_ctx_size <= 0 || FLAG_ctx_size > n_ctx_train)
         return n_ctx_train;
     return FLAG_ctx_size;
@@ -89,8 +89,8 @@ Slot::~Slot()
 {
     if (ctx_)
         llama_free(ctx_);
-    if (clip_ctx_)
-        clip_free(clip_ctx_);
+    if (mtmd_ctx_)
+        mtmd_free(mtmd_ctx_);
 }
 
 bool
@@ -99,9 +99,6 @@ Slot::start()
     unassert(!ctx_);
     llama_context_params cparams = {};
     cparams.embeddings = false;
-    cparams.embeddings_only = false;
-    cparams.logits_all = false;
-    cparams.seed = 12345;
     cparams.n_ctx = choose_ctx_size(model_);
     cparams.n_batch = FLAG_batch;
     cparams.n_ubatch = FLAG_ubatch;
@@ -121,13 +118,16 @@ Slot::start()
     cparams.offload_kqv = true;
     cparams.type_k = GGML_TYPE_F16;
     cparams.type_v = GGML_TYPE_F16;
-    cparams.flash_attn = FLAG_flash_attn;
+    cparams.flash_attn_type = FLAG_flash_attn ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED;
     system_fingerprint_ = generate_system_fingerprint(&cparams);
-    if (!(ctx_ = llama_new_context_with_model(model_, cparams)))
+    if (!(ctx_ = llama_init_from_model(model_, cparams)))
         return false;
-    if (FLAG_mmproj)
-        if (!(clip_ctx_ = clip_model_load(FLAG_mmproj, FLAG_verbose)))
+    if (FLAG_mmproj) {
+        mtmd_context_params mtmd_params = mtmd_context_params_default();
+        mtmd_params.n_threads = FLAG_threads_batch;
+        if (!(mtmd_ctx_ = mtmd_init_from_file(FLAG_mmproj, model_, mtmd_params)))
             return false;
+    }
     return true;
 }
 
@@ -170,11 +170,9 @@ Slot::eval_tokens(const std::vector<int>& tokens,
         int n_eval = N - i;
         if (n_eval > FLAG_batch)
             n_eval = FLAG_batch;
-        if (llama_decode(ctx_,
-                         { .n_tokens = n_eval,
-                           .token = &toks[i],
-                           .all_pos_0 = used,
-                           .all_pos_1 = 1 }))
+        struct llama_batch batch = llama_batch_get_one(toks.data() + i, n_eval);
+        batch.pos[0] = used;
+        if (llama_decode(ctx_, batch))
             return decode_token_failed;
         for (int j = 0; j < n_eval; ++j)
             history_.emplace_back(toks[i + j]);
@@ -192,41 +190,76 @@ Slot::eval_image(const std::string_view& bytes,
 {
     if (!ctx_)
         return uninitialized;
-    if (!clip_ctx_)
+    if (!mtmd_ctx_)
         return no_vision_model;
-    llava_image_embed* image_embed =
-      llava_image_embed_make_with_bytes(clip_ctx_,
-                                        FLAG_threads_batch,
-                                        (const unsigned char*)bytes.data(),
-                                        bytes.size());
-    if (!image_embed)
+
+    // Step 1: Load image from buffer
+    mtmd_bitmap* bitmap = mtmd_helper_bitmap_init_from_buf(
+        mtmd_ctx_,
+        (const unsigned char*)bytes.data(),
+        bytes.size());
+    if (!bitmap)
         return encode_image_failed;
+
+    // Step 2: Tokenize with marker text
+    mtmd_input_text input = {
+        .text = mtmd_default_marker(),
+        .add_special = false,
+        .parse_special = true,
+    };
+    mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+    int32_t res = mtmd_tokenize(mtmd_ctx_, chunks, &input, const_cast<const mtmd_bitmap**>(&bitmap), 1);
+    mtmd_bitmap_free(bitmap);
+
+    if (res != 0)
+        return encode_image_failed;
+
+    // Step 3: Check context size
+    const mtmd_input_chunk* chunk = mtmd_input_chunks_get(chunks, 0);
+    size_t N = mtmd_input_chunk_get_n_tokens(chunk);
     int used = ctx_used();
-    int N = image_embed->n_image_pos;
-    if (used + N > ctx_size()) {
-        llava_image_embed_free(image_embed);
+    if (used + (int)N > ctx_size()) {
+        mtmd_input_chunks_free(chunks);
         return out_of_context;
     }
+
+    // Step 4: Encode
+    res = mtmd_encode_chunk(mtmd_ctx_, chunk);
+    if (res != 0) {
+        mtmd_input_chunks_free(chunks);
+        return encode_image_failed;
+    }
+
+    // Step 5: Get embeddings
+    float* embd = mtmd_get_output_embd(mtmd_ctx_);
+
+    // Step 6: Decode (handle batching)
     int processed = 0;
-    int n_embd = llama_n_embd(llama_get_model(ctx_));
-    for (int i = 0; i < N; i += FLAG_batch) {
-        int n_eval = N - i;
+    int n_embd = llama_model_n_embd(llama_get_model(ctx_));
+    llama_pos n_past = used;
+
+    for (int i = 0; i < (int)N; i += FLAG_batch) {
+        int n_eval = (int)N - i;
         if (n_eval > FLAG_batch)
             n_eval = FLAG_batch;
-        if (llama_decode(ctx_,
-                         { .n_tokens = n_eval,
-                           .embd = image_embed->embed + i * n_embd,
-                           .all_pos_0 = used,
-                           .all_pos_1 = 1 })) {
-            llava_image_embed_free(image_embed);
+
+        llama_pos new_n_past = n_past;
+        int32_t decode_res = mtmd_helper_decode_image_chunk(
+            mtmd_ctx_, ctx_, chunk, embd + i * n_embd,
+            n_past, 0, n_eval, &new_n_past);
+
+        if (decode_res != 0) {
+            mtmd_input_chunks_free(chunks);
             return decode_image_failed;
         }
-        used += n_eval;
+
+        n_past = new_n_past;
         processed += n_eval;
         if (progress)
-            progress(processed, N);
+            progress(processed, (int)N);
     }
-    llava_image_embed_free(image_embed);
+
+    mtmd_input_chunks_free(chunks);
     history_.emplace_back(new Image(bytes, N));
     return N;
 }
@@ -241,17 +274,26 @@ Slot::eval_atoms(const std::vector<Atom>& atoms,
             if (atom.is_token()) {
                 total_work += 1;
             } else if (atom.is_image()) {
-                if (!clip_ctx_)
+                if (!mtmd_ctx_)
                     return no_vision_model;
-                llava_image_embed* image_embed =
-                  llava_image_embed_make_with_bytes(
-                    clip_ctx_,
-                    FLAG_threads_batch,
+                mtmd_bitmap* bitmap = mtmd_helper_bitmap_init_from_buf(
+                    mtmd_ctx_,
                     (const unsigned char*)atom.image().bytes().data(),
                     atom.image().bytes().size());
-                if (image_embed) {
-                    total_work += image_embed->n_image_pos;
-                    llava_image_embed_free(image_embed);
+                if (bitmap) {
+                    mtmd_input_text input = {
+                        .text = mtmd_default_marker(),
+                        .add_special = false,
+                        .parse_special = true,
+                    };
+                    mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+                    int32_t res = mtmd_tokenize(mtmd_ctx_, chunks, &input, const_cast<const mtmd_bitmap**>(&bitmap), 1);
+                    mtmd_bitmap_free(bitmap);
+                    if (res == 0) {
+                        const mtmd_input_chunk* chunk = mtmd_input_chunks_get(chunks, 0);
+                        total_work += mtmd_input_chunk_get_n_tokens(chunk);
+                    }
+                    mtmd_input_chunks_free(chunks);
                 }
             }
         }
@@ -295,7 +337,8 @@ Slot::prefill(const std::vector<Atom>& atoms, const ProgressCallback& progress)
 
     // handle special case of empty prefill
     if (atoms.empty()) {
-        llama_kv_cache_clear(ctx_);
+        llama_memory_t mem = llama_get_memory(ctx_);
+        llama_memory_clear(mem, true);
         history_.clear();
         return 0;
     }
@@ -380,7 +423,8 @@ Slot::prefill(const std::vector<Atom>& atoms, const ProgressCallback& progress)
     // discard tokens from kv cache
     int discarded_tokens;
     int relocated_tokens = 0;
-    if (llama_kv_cache_seq_rm(ctx_, 0, keep_tokens, relocate_p0_tokens)) {
+    llama_memory_t mem = llama_get_memory(ctx_);
+    if (llama_memory_seq_rm(mem, 0, keep_tokens, relocate_p0_tokens)) {
         if (relocate_p0 == -1) {
             discarded_tokens = history_tokens - keep_tokens;
             history_.resize(keep);
@@ -392,7 +436,7 @@ Slot::prefill(const std::vector<Atom>& atoms, const ProgressCallback& progress)
             history_.erase(history_.begin() + keep,
                            history_.begin() + relocate_p0);
             // memmove relocated tokens in kv cache
-            llama_kv_cache_seq_add(ctx_,
+            llama_memory_seq_add(mem,
                                    0,
                                    relocate_p0_tokens,
                                    relocate_p1_tokens,
@@ -402,7 +446,7 @@ Slot::prefill(const std::vector<Atom>& atoms, const ProgressCallback& progress)
         // models like Mamba can't be partially erased
         SLOG("failed to remove tokens from KV cache");
         discarded_tokens = history_tokens;
-        llama_kv_cache_clear(ctx_);
+        llama_memory_clear(mem, true);
         history_.clear();
         skipped = 0;
     }

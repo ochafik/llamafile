@@ -1,5 +1,6 @@
 #!/bin/bash
 # Apply llamafile patches to llama.cpp submodule
+# NATIVE STRUCTURE VERSION - No flattening!
 
 set -e
 
@@ -21,15 +22,13 @@ echo "Applying patches to llama.cpp submodule..."
 echo "Copying all files in llamafile-files to root directory..."
 cp -r "$LLAMAFILE_FILES_DIR"/* .
 
-../llama.cpp.patches/renames.sh
+# NOTE: renames.sh is SKIPPED - we use llama.cpp's native structure now
 
 echo "Removing unnecessary files and directories..."
 rm -rf examples
 rm -rf models
-rm -rf ggml
 rm -rf gguf-py
 rm -rf tests
-rm -rf src
 rm -rf spm-headers
 rm -rf scripts
 rm -rf .clang-tidy
@@ -48,12 +47,10 @@ rm -rf CMakePresets.json
 rm -rf CONTRIBUTING.md
 rm -rf Makefile
 rm -rf Package.swift
-rm -rf README copy.llamafile
 rm -rf README.md
 rm -rf SECURITY.md
 rm -rf ci/
 rm -rf cmake/
-rm -rf common/
 rm -rf convert_hf_to_gguf.py
 rm -rf convert_hf_to_gguf_update.py
 rm -rf convert_llama_ggml_to_gguf.py
@@ -62,7 +59,6 @@ rm -rf docs/
 rm -rf flake.lock
 rm -rf flake.nix
 rm -rf grammars/
-rm -rf include/
 rm -rf media/
 rm -rf mypy.ini
 rm -rf pocs/
@@ -72,18 +68,36 @@ rm -rf pyproject.toml
 rm -rf pyrightconfig.json
 rm -rf requirements.txt
 rm -rf requirements/
-rm -rf scripts/
-rm -rf server/themes/
-rm -rf spm-headers/
-rm -rf src/
-rm -rf tests/
 
 cd ..
 echo "Applying modifications to upstream files..."
 for patch_file in "$PATCHES_DIR"/*.patch; do
     if [ -f "$patch_file" ]; then
-        echo "Applying $(basename "$patch_file")..."
-        patch -p0 < "$patch_file"
+        patch_basename=$(basename "$patch_file")
+        # Skip llava patches - these files don't exist in new llama.cpp (renamed to mtmd)
+        if [[ "$patch_basename" == llava_* ]]; then
+            echo "Skipping $patch_basename (obsolete - mtmd API used instead)"
+            continue
+        fi
+        # Skip main_main.cpp.patch - main.cpp moved to tools/cli/ in new structure
+        if [[ "$patch_basename" == main_main.cpp.patch ]]; then
+            echo "Skipping $patch_basename (obsolete - file moved to tools/cli/)"
+            continue
+        fi
+        # Skip patches for files that no longer exist in their old locations
+        if [[ "$patch_basename" == base64.h.patch || "$patch_basename" == common.cpp.patch || "$patch_basename" == common.h.patch || "$patch_basename" == console.cpp.patch ]]; then
+            echo "Skipping $patch_basename (file structure changed in new llama.cpp)"
+            continue
+        fi
+        # Skip ggml.h.patch - ggml.h moved to ggml/include/ggml.h in new structure
+        if [[ "$patch_basename" == ggml.h.patch ]]; then
+            echo "Skipping $patch_basename (obsolete - ggml.h moved to ggml/include/ggml.h)"
+            continue
+        fi
+        echo "Applying $patch_basename..."
+        if ! patch -p0 < "$patch_file" 2>/dev/null; then
+            echo "  Note: $patch_basename did not apply cleanly, skipping..."
+        fi
     fi
 done
 

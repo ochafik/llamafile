@@ -16,27 +16,29 @@
 // limitations under the License.
 
 #include "llama.h"
-#include "llama.cpp/llama.h"
+#include "llama.cpp/include/llama.h"
 #include <cassert>
 #include <string>
 #include <vector>
 
 int llamafile_token_eot(llama_model *model) {
-    llama_token eot = llama_token_eot(model);
+    const struct llama_vocab * vocab = llama_model_get_vocab(model);
+    llama_token eot = llama_vocab_eot(vocab);
     if (eot != -1)
         return eot;
-    return llama_token_eos(model);
+    return llama_vocab_eos(vocab);
 }
 
 std::string llamafile_token_to_piece(const llama_context *ctx, llama_token token, bool special) {
     std::string piece;
     piece.resize(piece.capacity());
+    const struct llama_vocab * vocab = llama_model_get_vocab(llama_get_model(ctx));
     const int n_chars =
-        llama_token_to_piece(llama_get_model(ctx), token, &piece[0], piece.size(), 0, special);
+        llama_token_to_piece(vocab, token, &piece[0], piece.size(), 0, special);
     if (n_chars < 0) {
         piece.resize(-n_chars);
         int check =
-            llama_token_to_piece(llama_get_model(ctx), token, &piece[0], piece.size(), 0, special);
+            llama_token_to_piece(vocab, token, &piece[0], piece.size(), 0, special);
         unassert(check == -n_chars);
     } else {
         piece.resize(n_chars);
@@ -47,13 +49,14 @@ std::string llamafile_token_to_piece(const llama_context *ctx, llama_token token
 std::vector<llama_token> llamafile_tokenize(const struct llama_model *model,
                                             const std::string_view &text, bool add_special,
                                             bool parse_special) {
+    const struct llama_vocab * vocab = llama_model_get_vocab(model);
     int n_tokens = text.size() + 2 * add_special;
     std::vector<llama_token> result(n_tokens);
-    n_tokens = llama_tokenize(model, text.data(), text.size(), result.data(), result.size(),
+    n_tokens = llama_tokenize(vocab, text.data(), text.size(), result.data(), result.size(),
                               add_special, parse_special);
     if (n_tokens < 0) {
         result.resize(-n_tokens);
-        int check = llama_tokenize(model, text.data(), text.size(), result.data(), result.size(),
+        int check = llama_tokenize(vocab, text.data(), text.size(), result.data(), result.size(),
                                    add_special, parse_special);
         unassert(check == -n_tokens);
     } else {

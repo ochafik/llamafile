@@ -27,8 +27,8 @@
     "human's questions."
 
 struct bestlineCompletions;
-struct clip_ctx;
-struct gpt_params;
+struct mtmd_context;
+struct common_params;
 struct llama_context;
 struct llama_model;
 
@@ -48,9 +48,9 @@ enum SpecialToken {
 extern bool g_manual_mode;
 extern bool g_said_something;
 extern char g_last_printed_char;
-extern clip_ctx *g_clip;
+extern mtmd_context *g_mtmd;
 extern enum Role g_role;
-extern gpt_params g_params;
+extern common_params g_params;
 extern int g_system_prompt_tokens;
 extern llama_context *g_ctx;
 extern llama_model *g_model;

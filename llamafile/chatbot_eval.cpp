@@ -16,14 +16,15 @@
 // limitations under the License.
 
 #include "chatbot.h"
-#include "llama.cpp/base64.h"
-#include "llama.cpp/common.h"
-#include "llama.cpp/llama.h"
-#include "llama.cpp/llava/llava.h"
+#include "llama.cpp/common/base64.hpp"
+#include "llama.cpp/common/common.h"
+#include "llama.cpp/include/llama.h"
+#include "llama.cpp/tools/mtmd/mtmd.h"
+#include "llama.cpp/tools/mtmd/mtmd-helper.h"
 #include "llamafile/datauri.h"
 #include "llamafile/image.h"
 #include "llamafile/llama.h"
-#include "llamafile/string.h"
+#include "llamafile/strlib.h"
 #include <cassert>
 #include <string>
 #include <vector>
@@ -46,7 +47,7 @@ bool eval_tokens(std::vector<llama_token> tokens) {
         int n_eval = (int)tokens.size() - i;
         if (n_eval > g_params.n_batch)
             n_eval = g_params.n_batch;
-        if (llama_decode(g_ctx, llama_batch_get_one(&tokens[i], n_eval, tokens_used(), 0)))
+        if (llama_decode(g_ctx, llama_batch_get_one(&tokens[i], n_eval)))
             return out_of_context(n_eval);
         g_history.insert(g_history.end(), tokens.begin() + i, tokens.begin() + i + n_eval);
     }
@@ -60,11 +61,10 @@ bool eval_tokens(std::vector<llama_token> tokens) {
     return true;
 }
 
-bool eval_image_embed(const llava_image_embed *image_embed) {
-    int N = image_embed->n_image_pos;
+bool eval_image_embed(const float *embed, int n_image_pos, int n_embd) {
+    int N = n_image_pos;
     if (tokens_used() + N > llama_n_ctx(g_ctx))
         return out_of_context(N);
-    int n_embd = llama_n_embd(llama_get_model(g_ctx));
     for (int i = 0; i < N; i += g_params.n_batch) {
         if (g_got_sigint) {
             g_got_sigint = false;
@@ -78,10 +78,11 @@ bool eval_image_embed(const llava_image_embed *image_embed) {
             n_eval = g_params.n_batch;
         llama_batch batch = {
             .n_tokens = n_eval,
-            .embd = image_embed->embed + i * n_embd,
-            .all_pos_0 = tokens_used(),
-            .all_pos_1 = 1,
-            .all_seq_id = 0,
+            .embd = (float *)(embed + i * n_embd),
+            .pos = nullptr,  // auto-tracked by llama_decode
+            .n_seq_id = nullptr,
+            .seq_id = nullptr,
+            .logits = nullptr,
         };
         if (llama_decode(g_ctx, batch))
             return out_of_context(n_eval);
@@ -94,18 +95,52 @@ bool eval_image_embed(const llava_image_embed *image_embed) {
 }
 
 bool eval_image(const std::string_view binary) {
-    unassert(g_clip);
-    llava_image_embed *image_embed;
+    unassert(g_mtmd);
+
+    // Step 1: Load image from buffer
     print_ephemeral("analyzing image...");
-    image_embed = llava_image_embed_make_with_bytes(
-        g_clip, FLAG_threads_batch, (const unsigned char *)binary.data(), binary.size());
+    mtmd_bitmap* bitmap = mtmd_helper_bitmap_init_from_buf(
+        g_mtmd,
+        (const unsigned char*)binary.data(),
+        binary.size());
     clear_ephemeral();
-    if (!image_embed) {
+    if (!bitmap) {
         err("failed to load image");
         return false;
     }
-    bool ok = eval_image_embed(image_embed);
-    llava_image_embed_free(image_embed);
+
+    // Step 2: Tokenize with marker text
+    mtmd_input_text input = {
+        .text = mtmd_default_marker(),
+        .add_special = false,
+        .parse_special = true,
+    };
+    mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+    int32_t res = mtmd_tokenize(g_mtmd, chunks, &input, (const mtmd_bitmap**)&bitmap, 1);
+    mtmd_bitmap_free(bitmap);
+
+    if (res != 0) {
+        err("failed to tokenize image");
+        mtmd_input_chunks_free(chunks);
+        return false;
+    }
+
+    // Step 3: Encode
+    const mtmd_input_chunk* chunk = mtmd_input_chunks_get(chunks, 0);
+    res = mtmd_encode_chunk(g_mtmd, chunk);
+    if (res != 0) {
+        err("failed to encode image");
+        mtmd_input_chunks_free(chunks);
+        return false;
+    }
+
+    // Step 4: Get embeddings and evaluate
+    float* embd = mtmd_get_output_embd(g_mtmd);
+    size_t N = mtmd_input_chunk_get_n_tokens(chunk);
+    int n_embd = llama_model_n_embd(llama_get_model(g_ctx));
+    bool ok = eval_image_embed(embd, N, n_embd);
+
+    mtmd_input_chunks_free(chunks);
     return ok;
 }
 

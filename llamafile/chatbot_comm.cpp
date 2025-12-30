@@ -21,7 +21,7 @@
 #include <sstream>
 #include <vector>
 
-#include "llama.cpp/llama.h"
+#include "llama.cpp/include/llama.h"
 #include "llamafile/llamafile.h"
 
 namespace lf {
@@ -29,7 +29,8 @@ namespace chatbot {
 
 void on_stats(const std::vector<std::string> &args) {
     FLAG_log_disable = false;
-    llama_print_timings(g_ctx);
+    // TODO: llama_print_timings was removed in new llama.cpp
+    // llama_print_timings(g_ctx);
     FLAG_log_disable = true;
 }
 
