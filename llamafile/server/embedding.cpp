@@ -16,7 +16,7 @@
 // limitations under the License.
 
 #include "client.h"
-#include "llama.cpp/include/llama.h"
+#include "llama.cpp/llama.h"
 #include "llamafile/json.h"
 #include "llamafile/server/cleanup.h"
 #include "llamafile/server/fastjson.h"
@@ -161,10 +161,9 @@ Client::embedding()
     timespec started = timespec_real();
 
     // turn text into tokens
-    const struct llama_vocab * vocab = llama_model_get_vocab(model_);
     auto toks = new std::vector<llama_token>(params->prompt.size() + 16);
     defer_cleanup(cleanup_token_vector, toks);
-    int count = llama_tokenize(vocab,
+    int count = llama_tokenize(model_,
                                params->prompt.data(),
                                params->prompt.size(),
                                &(*toks)[0],
@@ -181,13 +180,16 @@ Client::embedding()
         return send_error(400, "completely empty prompt disallowed");
 
     // truncate if exceeds model context size
-    const int n_ctx_train = llama_model_n_ctx_train(model_);
+    const int n_ctx_train = llama_n_ctx_train(model_);
     if (count > n_ctx_train)
         count = n_ctx_train;
 
     // initialize context
     llama_context_params cparams = {};
     cparams.embeddings = true;
+    cparams.embeddings_only = true;
+    cparams.logits_all = true;
+    cparams.seed = _rand64();
     cparams.n_ctx = count;
     cparams.n_batch = count;
     cparams.n_ubatch = count;
@@ -199,15 +201,16 @@ Client::embedding()
     cparams.pooling_type = LLAMA_POOLING_TYPE_NONE;
     cparams.type_k = GGML_TYPE_F16;
     cparams.type_v = GGML_TYPE_F16;
-    llama_context* ctx = llama_init_from_model(model_, cparams);
+    cparams.flash_attn = FLAG_flash_attn;
+    llama_context* ctx = llama_new_context_with_model(model_, cparams);
     if (!ctx) {
-        SLOG("llama_init_from_model failed");
+        SLOG("llama_new_context_with_model failed");
         return send_error(500);
     }
     defer_cleanup(cleanup_llama_context, ctx);
 
     // initialize batch
-    const int n_embd = llama_model_n_embd(model_);
+    const int n_embd = llama_n_embd(model_);
     llama_batch* batch = new llama_batch;
     *batch = llama_batch_init(count, 0, 1);
     defer_cleanup(cleanup_llama_batch, batch);

@@ -17,20 +17,7 @@ LLAMAFILE_OBJS :=					\
 	$(LLAMAFILE_SRCS_CPP:%.cpp=o/$(MODE)/%.o)	\
 	$(LLAMAFILE_FILES:%=o/$(MODE)/%.zip.o)		\
 
-# Include paths for llama.cpp headers (needed for ggml-impl.h etc.)
-# Use both -Illamafile (for quote includes) and -idirafter (to avoid shadowing system headers)
-LLAMAFILE_INCLUDES =					\
-	-Illama.cpp/include				\
-	-Illama.cpp/src					\
-	-Illama.cpp/common				\
-	-Illama.cpp/ggml/include			\
-	-Illama.cpp/ggml/src				\
-	-Illama.cpp/tools/mtmd				\
-	-Illama.cpp/tools/cli				\
-	-Illama.cpp/tools/server			\
-	-Illamafile
-
-$(LLAMAFILE_OBJS): private CCFLAGS += -g $(LLAMAFILE_INCLUDES)
+$(LLAMAFILE_OBJS): private CCFLAGS += -g
 
 # this executable defines its own malloc(), free(), etc.
 # therefore we want to avoid it going inside the .a file

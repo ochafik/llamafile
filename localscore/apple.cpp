@@ -2,7 +2,7 @@
 #include <dlfcn.h>
 
 #include "apple.h"
-#include ".common.h"
+#include "llama.cpp/common.h"
 
 static void *imp(void *lib, const char *sym) {
     void *fun = cosmo_dlsym(lib, sym);

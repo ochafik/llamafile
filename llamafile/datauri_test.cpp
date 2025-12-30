@@ -17,7 +17,7 @@
 
 #include "datauri.h"
 #include "image.h"
-#include "strlib.h"
+#include "string.h"
 #include <string>
 #include <vector>
 

@@ -16,7 +16,7 @@
 // limitations under the License.
 
 #include "client.h"
-#include "llama.cpp/include/llama.h"
+#include "llama.cpp/llama.h"
 #include "llama.cpp/sampling.h"
 #include "llamafile/json.h"
 #include "llamafile/llama.h"
@@ -30,7 +30,7 @@
 #include "llamafile/server/slots.h"
 #include "llamafile/server/utils.h"
 #include "llamafile/server/worker.h"
-#include "llamafile/strlib.h"
+#include "llamafile/string.h"
 #include "llamafile/vector.h"
 #include <cassert>
 #include <cmath>
@@ -529,12 +529,9 @@ Client::v1_chat_completions()
 
     // turn prompt into atom array that'll fit in context window
     for (;;) {
-        // Get vocab from model for new llama.cpp API
-        const struct llama_vocab * vocab = llama_model_get_vocab(model_);
-
         // add bos token if it's needed
         if (llama_should_add_bos_token(model_))
-            state->atoms.emplace_back(llama_vocab_bos(vocab));
+            state->atoms.emplace_back(llama_token_bos(model_));
 
         // turn text into tokens
         state->prompt = llama_chat_apply_template(
@@ -551,7 +548,7 @@ Client::v1_chat_completions()
         }
 
         // check if image uploading is supported
-        if (!slot_->mtmd_ctx_ && has_images(state->atoms))
+        if (!slot_->clip_ctx_ && has_images(state->atoms))
             return send_error(400, "no_vision_model");
 
         // check if we have enough context
@@ -681,8 +678,7 @@ Client::v1_chat_completions()
             SLOG("ran out of context window");
             break;
         }
-        const struct llama_vocab * vocab = llama_model_get_vocab(model_);
-        if (llama_vocab_is_eog(vocab, id)) {
+        if (llama_token_is_eog(model_, id)) {
             finish_reason = "stop";
             break;
         }

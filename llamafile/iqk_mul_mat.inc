@@ -19,12 +19,8 @@
 #include <type_traits>
 #if defined __x86_64__ || defined __aarch64__
 
-#include "llama.cpp/ggml/src/ggml-impl.h"
-#include "llama.cpp/ggml/src/ggml-quants.h"
-#if defined(__aarch64__)
-#include "llama.cpp/ggml/src/ggml-cpu/ggml-cpu-impl.h"
-#include "llama.cpp/ggml/src/ggml-cpu/repack.h"
-#endif
+#include "llama.cpp/ggml-impl.h"
+#include "llama.cpp/ggml-quants.h"
 #include "sgemm.h"
 
 // For i-quants, I had to explicitely specify which
@@ -42,7 +38,7 @@
 #endif
 
 #define GGML_COMMON_IMPL_C
-#include "llama.cpp/ggml/src/ggml-common.h"
+#include "llama.cpp/ggml-common.h"
 
 // clang-format off
 
@@ -2568,12 +2564,12 @@ template <int nrc> struct Q80 {
     }
 
     inline const int8_t * quant_data(int iy, int i) const {
-        const block_q8_0x4 * y4 = (const block_q8_0x4 *)y[iy] + i;
+        const block_q8_0_x4 * y4 = (const block_q8_0_x4 *)y[iy] + i;
         return y4->qs;
     }
 
     inline float16x4_t load_scales(int iy, int i) const {
-        const block_q8_0x4 * y4 = (const block_q8_0x4 *)y[iy] + i;
+        const block_q8_0_x4 * y4 = (const block_q8_0_x4 *)y[iy] + i;
         return vld1_f16((const float16_t *)y4->d);
     }
 
@@ -2609,14 +2605,13 @@ template <int nrc> struct Q81 {
     }
 
     inline const int8_t * quant_data(int iy, int i) const {
-        return y[iy][i].qs;
+        const block_q8_1_x4 * y4 = (const block_q8_1_x4 *)y[iy] + i;
+        return y4->qs;
     }
 
     inline float16x8_t load_scales(int iy, int i) const {
-        // Use standard block_q8_1 layout (d and s are ggml_half, can load as float16x2_t)
-        const auto & yblock = y[iy][i];
-        float16x4_t d_s = {yblock.d, yblock.s, 0, 0};  // d and s from block_q8_1
-        return vcombine_f16(d_s, vdup_n_f16(0));
+        const block_q8_1_x4 * y4 = (const block_q8_1_x4 *)y[iy] + i;
+        return vld1q_f16((const float16_t *)y4->d);
     }
 
     template <typename Dequantizer>

@@ -16,7 +16,7 @@
 // limitations under the License.
 
 #include "client.h"
-#include "llama.cpp/include/llama.h"
+#include "llama.cpp/llama.h"
 #include "llama.cpp/sampling.h"
 #include "llamafile/json.h"
 #include "llamafile/llama.h"
@@ -30,7 +30,7 @@
 #include "llamafile/server/slots.h"
 #include "llamafile/server/utils.h"
 #include "llamafile/server/worker.h"
-#include "llamafile/strlib.h"
+#include "llamafile/string.h"
 #include "llamafile/vector.h"
 #include <cmath>
 #include <cstring>
@@ -410,9 +410,6 @@ Client::v1_completions()
     if (!get_v1_completions_params(params))
         return false;
 
-    // get vocab for new llama.cpp API
-    const struct llama_vocab * vocab = llama_model_get_vocab(model_);
-
     // create state and response objects
     V1CompletionState* state = new V1CompletionState;
     defer_cleanup(cleanup_state, state);
@@ -421,7 +418,7 @@ Client::v1_completions()
 
     // add bos token if it's needed
     if (llama_should_add_bos_token(model_))
-        state->atoms.emplace_back(llama_vocab_bos(vocab));
+        state->atoms.emplace_back(llama_token_bos(model_));
 
     // turn text into tokens
     atomize(model_, &state->atoms, params->prompt, PARSE_SPECIAL);
@@ -489,7 +486,7 @@ Client::v1_completions()
             SLOG("ran out of context window");
             break;
         }
-        if (llama_vocab_is_eog(vocab, id)) {
+        if (llama_token_is_eog(model_, id)) {
             finish_reason = "stop";
             break;
         }

@@ -15,7 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "llama.cpp/include/llama.h"
+#include "llama.cpp/llama.h"
 #include "llamafile/llamafile.h"
 #include "llamafile/pool.h"
 #include "llamafile/server/log.h"
@@ -74,6 +74,7 @@ main(int argc, char* argv[])
         .split_mode = (enum llama_split_mode)FLAG_split_mode,
         .main_gpu = FLAG_main_gpu,
         .tensor_split = nullptr,
+        .rpc_servers = nullptr,
         .progress_callback = nullptr,
         .progress_callback_user_data = nullptr,
         .kv_overrides = nullptr,
@@ -82,7 +83,7 @@ main(int argc, char* argv[])
         .use_mlock = false,
         .check_tensors = false,
     };
-    llama_model* model = llama_model_load_from_file(FLAG_model, mparams);
+    llama_model* model = llama_load_model_from_file(FLAG_model, mparams);
     if (!model) {
         fprintf(stderr, "%s: failed to load model\n", FLAG_model);
         exit(1);

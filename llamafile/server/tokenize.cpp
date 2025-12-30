@@ -16,7 +16,7 @@
 // limitations under the License.
 
 #include "client.h"
-#include "llama.cpp/include/llama.h"
+#include "llama.cpp/llama.h"
 #include "llamafile/json.h"
 #include "llamafile/server/cleanup.h"
 #include "llamafile/server/fastjson.h"
@@ -105,13 +105,10 @@ Client::tokenize()
     getrusage(RUSAGE_THREAD, &rustart);
     timespec started = timespec_real();
 
-    // Get vocab from model for new llama.cpp API
-    const struct llama_vocab * vocab = llama_model_get_vocab(model_);
-
     // turn text into tokens
     auto toks = new std::vector<llama_token>(params->prompt.size() + 16);
     defer_cleanup(cleanup_token_vector, toks);
-    int count = llama_tokenize(vocab,
+    int count = llama_tokenize(model_,
                                params->prompt.data(),
                                params->prompt.size(),
                                &(*toks)[0],
@@ -140,7 +137,7 @@ Client::tokenize()
         p = stpcpy(p, "\n    ");
         char s[32];
         int n =
-          llama_token_to_piece(vocab, (*toks)[i], s, sizeof(s), false, true);
+          llama_token_to_piece(model_, (*toks)[i], s, sizeof(s), false, true);
         if (n < 0) {
             SLOG("failed to turn token into string");
             return send_error(405);

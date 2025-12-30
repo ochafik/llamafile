@@ -21,11 +21,11 @@
 #include <sys/stat.h>
 #include <vector>
 
-#include "llama.cpp/common/common.h"
+#include "llama.cpp/common.h"
 #include "llamafile/color.h"
 #include "llamafile/image.h"
 #include "llamafile/llama.h"
-#include "llamafile/strlib.h"
+#include "llamafile/string.h"
 
 namespace lf {
 namespace chatbot {
@@ -64,7 +64,7 @@ void on_upload(const std::vector<std::string> &args) {
     markdown += iso8601(st.st_mtim);
     markdown += "\n\n";
     if (is_image(content)) {
-        if (!g_mtmd) {
+        if (!g_clip) {
             err("%s: need --mmproj model to process images", path);
             return;
         }
@@ -83,22 +83,10 @@ void on_upload(const std::vector<std::string> &args) {
             markdown += '\n';
         markdown += "``````";
     }
-    std::vector<llama_chat_message> chat;
-    chat.push_back({"system", markdown.c_str()});
-    std::vector<char> buf(4096);
-    int32_t res = llama_chat_apply_template(g_params.chat_template.c_str(),
-                                              chat.data(), chat.size(),
-                                              DONT_ADD_ASSISTANT,
-                                              buf.data(), buf.size());
-    if (res > (int32_t)buf.size()) {
-        buf.resize(res + 1);
-        res = llama_chat_apply_template(g_params.chat_template.c_str(),
-                                          chat.data(), chat.size(),
-                                          DONT_ADD_ASSISTANT,
-                                          buf.data(), buf.size());
-    }
-    std::string formatted_msg(buf.data(), res > 0 ? res : 0);
-    if (!eval_string(formatted_msg, DONT_ADD_SPECIAL, PARSE_SPECIAL)) {
+    std::vector<llama_chat_msg> chat = {{"system", std::move(markdown)}};
+    if (!eval_string(
+            llama_chat_apply_template(g_model, g_params.chat_template, chat, DONT_ADD_ASSISTANT),
+            DONT_ADD_SPECIAL, PARSE_SPECIAL)) {
         rewind(tokens_used_before);
         return;
     }

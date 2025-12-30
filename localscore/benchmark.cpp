@@ -2,8 +2,8 @@
 
 #include <iterator>
 
-#include ".ggml-cuda.h"
-#include ".string.h"
+#include "llama.cpp/ggml-cuda.h"
+#include "llama.cpp/string.h"
 #include "llamafile/string.h"
 #include "utils.h"
 

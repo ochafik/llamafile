@@ -6,14 +6,14 @@
 #include <iostream>
 #include <string>
 #include <sstream>
-#include ".string.h"
+#include "llama.cpp/string.h"
 
 #include "cmd.h"
 #include "utils.h"
 
-#include ".ggml-metal.h"
-#include ".ggml-cuda.h"
-#include ".common.h"
+#include "llama.cpp/ggml-metal.h"
+#include "llama.cpp/ggml-cuda.h"
+#include "llama.cpp/common.h"
 
 #include <libc/intrin/x86.h>
 

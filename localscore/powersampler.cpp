@@ -3,7 +3,7 @@
 #include <cosmo.h>
 
 #include "llamafile/llamafile.h"
-#include ".ggml-metal.h"
+#include "llama.cpp/ggml-metal.h"
 
 PowerSampler::PowerSampler(long sample_length_ms)
     : sample_length_ms_(sample_length_ms), is_sampling_(false) {

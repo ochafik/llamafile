@@ -6,7 +6,7 @@
 #include "nvml.h"
 #include "rsmi.h"
 #include "apple.h"
-#include ".ggml-backend-impl.h"
+#include "llama.cpp/ggml-backend-impl.h"
 
 typedef struct {
     double  power;

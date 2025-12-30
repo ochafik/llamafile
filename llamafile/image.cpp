@@ -22,7 +22,7 @@
 #include <termios.h>
 #include <unistd.h>
 
-#include "llama.cpp/common/base64.hpp"
+#include "llama.cpp/base64.h"
 #include "llamafile/macros.h"
 #include "llamafile/xterm.h"
 #include "third_party/stb/stb_image.h"

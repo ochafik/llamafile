@@ -16,13 +16,13 @@
 // limitations under the License.
 
 #include "atom.h"
-#include "llama.cpp/common/base64.hpp"
+#include "llama.cpp/base64.h"
 #include "llamafile/chatbot.h"
 #include "llamafile/datauri.h"
 #include "llamafile/image.h"
 #include "llamafile/llama.h"
 #include "llamafile/server/image.h"
-#include "llamafile/strlib.h"
+#include "llamafile/string.h"
 #include <string>
 #include <vector>
 

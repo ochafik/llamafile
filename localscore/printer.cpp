@@ -3,7 +3,7 @@
 #include "printer.h"
 #include "utils.h"
 
-#include ".string.h"
+#include "llama.cpp/string.h"
 
 FileWriter::FileWriter(FILE* f): fout(f) {}
 

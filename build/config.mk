@@ -15,7 +15,6 @@ INSTALL = install
 ARFLAGS = rcsD
 CXXFLAGS = -frtti -std=gnu++23
 CCFLAGS = -O2 -g -fexceptions -ffunction-sections -fdata-sections -mclang
-CCFLAGS += -I. -Illamafile -Illama.cpp/include -Illama.cpp/src -Illama.cpp/common -Illama.cpp/ggml/include -Illama.cpp/ggml/src -Illama.cpp/tools/mtmd -Illama.cpp/tools/cli -Illama.cpp/tools/server
 CPPFLAGS_ = -iquote. -mcosmo -DGGML_MULTIPLATFORM -Wno-attributes -DLLAMAFILE_DEBUG
 TARGET_ARCH = -Xx86_64-mtune=znver4
 

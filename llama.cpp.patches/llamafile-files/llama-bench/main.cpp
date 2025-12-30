@@ -25,7 +25,7 @@
 #include "llama.cpp/console.h"
 #include "llama.cpp/ggml-cuda.h"
 #include "llama.cpp/ggml-metal.h"
-#include "llama.cpp/tools/mtmd/mtmd.h"
+#include "llama.cpp/llava/llava.h"
 #include "llama.cpp/server/server.h"
 
 static llama_context           ** g_ctx;

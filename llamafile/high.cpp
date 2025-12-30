@@ -16,7 +16,7 @@
 // limitations under the License.
 
 #include "llamafile/highlight/highlight.h"
-#include "strlib.h"
+#include "string.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>

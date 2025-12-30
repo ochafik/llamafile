@@ -1,6 +1,6 @@
 #pragma once
 
-#include "llama.cpp/include/llama.h"
+#include "llama.cpp/llama.h"
 #include <atomic>
 #include <cstdint>
 #include <map>

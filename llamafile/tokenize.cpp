@@ -24,7 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "llama.cpp/include/llama.h"
+#include "llama.cpp/llama.h"
 
 int main(int argc, char **argv) {
     llamafile_check_cpu();
@@ -44,6 +44,7 @@ int main(int argc, char **argv) {
         .split_mode = (enum llama_split_mode)FLAG_split_mode,
         .main_gpu = 0,
         .tensor_split = nullptr,
+        .rpc_servers = nullptr,
         .progress_callback = nullptr,
         .progress_callback_user_data = nullptr,
         .kv_overrides = nullptr,
@@ -52,12 +53,9 @@ int main(int argc, char **argv) {
         .use_mlock = false,
         .check_tensors = false,
     };
-    llama_model *model = llama_model_load_from_file(FLAG_model, mparams);
+    llama_model *model = llama_load_model_from_file(FLAG_model, mparams);
     if (model == NULL)
         return 3;
-
-    // Get vocab from model for new llama.cpp API
-    const struct llama_vocab * vocab = llama_model_get_vocab(model);
 
     FILE *input;
     if (FLAG_prompt) {
@@ -78,7 +76,7 @@ int main(int argc, char **argv) {
             break;
 
         static llama_token toks[4096];
-        int count = llama_tokenize(vocab, text, textlen, toks, 4096, false, false);
+        int count = llama_tokenize(model, text, textlen, toks, 4096, false, false);
         if (count < 0) {
             fprintf(stderr, "%s: failed to tokenize line\n", argv[0]);
             exit(1);
@@ -87,7 +85,7 @@ int main(int argc, char **argv) {
         for (int i = 0; i < count; ++i) {
 
             char s[256];
-            int n = llama_token_to_piece(vocab, toks[i], s, sizeof(s), false, false);
+            int n = llama_token_to_piece(model, toks[i], s, sizeof(s), false, false);
             if (n < 0) {
                 fprintf(stderr, "%s: failed to convert token %d to string\n", argv[0], toks[i]);
                 exit(1);
@@ -140,5 +138,5 @@ int main(int argc, char **argv) {
         }
     }
 
-    llama_model_free(model);
+    llama_free_model(model);
 }

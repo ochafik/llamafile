@@ -17,7 +17,7 @@
 
 #include "llamafile/macros.h"
 #include "llamafile/net.h"
-#include "llamafile/strlib.h"
+#include "llamafile/string.h"
 #include "third_party/mbedtls/ctr_drbg.h"
 #include "third_party/mbedtls/debug.h"
 #include "third_party/mbedtls/error.h"
