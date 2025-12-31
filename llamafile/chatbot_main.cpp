@@ -30,7 +30,7 @@
 #include "llamafile/color.h"
 #include "llamafile/compute.h"
 #include "llamafile/llama.h"
-#include "llamafile/string.h"
+#include <string.h>
 
 namespace lf {
 namespace chatbot {

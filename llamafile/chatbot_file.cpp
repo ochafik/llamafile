@@ -25,7 +25,7 @@
 #include "llamafile/color.h"
 #include "llamafile/image.h"
 #include "llamafile/llama.h"
-#include "llamafile/string.h"
+#include <string.h>
 
 namespace lf {
 namespace chatbot {

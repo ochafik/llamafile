@@ -5,8 +5,18 @@ PREFIX = /usr/local
 COSMOCC = .cosmocc/3.9.7
 TOOLCHAIN = $(COSMOCC)/bin/cosmo
 
+# Enable ccache if available (disable with USE_CCACHE=0)
+ifneq ($(USE_CCACHE),0)
+CCACHE := $(shell command -v ccache 2>/dev/null)
+endif
+
+ifdef CCACHE
+CC = $(CCACHE) $(TOOLCHAIN)cc
+CXX = $(CCACHE) $(TOOLCHAIN)c++
+else
 CC = $(TOOLCHAIN)cc
 CXX = $(TOOLCHAIN)c++
+endif
 AR = $(COSMOCC)/bin/ar.ape
 ZIPOBJ = $(COSMOCC)/bin/zipobj
 MKDEPS = $(COSMOCC)/bin/mkdeps

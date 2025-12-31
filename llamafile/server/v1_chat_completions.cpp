@@ -30,7 +30,7 @@
 #include "llamafile/server/slots.h"
 #include "llamafile/server/utils.h"
 #include "llamafile/server/worker.h"
-#include "llamafile/string.h"
+#include <string.h>
 #include "llamafile/vector.h"
 #include <cassert>
 #include <cmath>

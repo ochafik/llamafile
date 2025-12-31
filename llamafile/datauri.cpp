@@ -17,7 +17,7 @@
 
 #include "datauri.h"
 #include "llama.cpp/base64.h"
-#include "llamafile/string.h"
+#include <string.h>
 #include <cctype>
 
 // See RFC2045 (MIME)

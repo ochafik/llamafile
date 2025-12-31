@@ -23,7 +23,7 @@
 #include "llamafile/datauri.h"
 #include "llamafile/image.h"
 #include "llamafile/llama.h"
-#include "llamafile/string.h"
+#include <string.h>
 #include <cassert>
 #include <string>
 #include <vector>

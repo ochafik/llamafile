@@ -19,7 +19,7 @@
 #include "llama.cpp/llama.h"
 #include "llamafile/json.h"
 #include "llamafile/llamafile.h"
-#include "llamafile/string.h"
+#include <string.h>
 #include <ctime>
 
 using jt::Json;
