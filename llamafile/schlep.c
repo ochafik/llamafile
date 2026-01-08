@@ -16,7 +16,8 @@
 // limitations under the License.
 
 #include "llama.cpp/ggml/include/ggml.h"
-#include "llamafile/log.h"
+#include "llamafile.h"
+#include "log.h"
 #include <cosmo.h>
 #include <errno.h>
 #include <pthread.h>

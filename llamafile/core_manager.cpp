@@ -19,7 +19,7 @@
 
 #include <assert.h>
 
-#include "llama.cpp/cores.cpp"
+#include "llamafile/cores.h"
 
 CoreManager g_core_manager;
 

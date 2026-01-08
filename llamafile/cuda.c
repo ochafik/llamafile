@@ -105,18 +105,18 @@ static struct Cuda {
     bool supported;
     bool has_amd_gpu;
     atomic_uint once;
-    // typeof(ggml_cuda_link) *GGML_CALL link;  // Removed: API changed
-    typeof(ggml_backend_cuda_buffer_type) *GGML_CALL buffer_type;
-    typeof(ggml_backend_cuda_host_buffer_type) *GGML_CALL host_buffer_type;
-    typeof(ggml_backend_cuda_init) *GGML_CALL backend_init;
-    typeof(ggml_backend_cuda_split_buffer_type) *GGML_CALL split_buffer_type;
-    // typeof(ggml_backend_cuda_reg_devices) *GGML_CALL reg_devices;  // Removed: API changed
-    // typeof(ggml_backend_cuda_get_device_properties) *GGML_CALL get_device_properties;  // Removed: API changed
-    typeof(ggml_backend_cuda_get_device_memory) *GGML_CALL get_device_memory;
-    typeof(ggml_backend_cuda_get_device_count) *GGML_CALL get_device_count;
-    typeof(ggml_backend_cuda_unregister_host_buffer) *GGML_CALL unreg_host_buf;
-    typeof(ggml_backend_cuda_register_host_buffer) *GGML_CALL register_host_buffer;
-    typeof(ggml_backend_cuda_get_device_description) *GGML_CALL get_description;
+    // typeof(ggml_cuda_link) *link;  // Removed: API changed
+    typeof(ggml_backend_cuda_buffer_type) *buffer_type;
+    typeof(ggml_backend_cuda_host_buffer_type) *host_buffer_type;
+    typeof(ggml_backend_cuda_init) *backend_init;
+    typeof(ggml_backend_cuda_split_buffer_type) *split_buffer_type;
+    // typeof(ggml_backend_cuda_reg_devices) *reg_devices;  // Removed: API changed
+    // typeof(ggml_backend_cuda_get_device_properties) *get_device_properties;  // Removed: API changed
+    typeof(ggml_backend_cuda_get_device_memory) *get_device_memory;
+    typeof(ggml_backend_cuda_get_device_count) *get_device_count;
+    typeof(ggml_backend_cuda_unregister_host_buffer) *unreg_host_buf;
+    typeof(ggml_backend_cuda_register_host_buffer) *register_host_buffer;
+    typeof(ggml_backend_cuda_get_device_description) *get_description;
 } ggml_cuda;
 
 static const char *Dlerror(void) {
@@ -980,25 +980,25 @@ bool llamafile_has_amd_gpu(void) {
     return ggml_cuda.has_amd_gpu;
 }
 
-GGML_CALL ggml_backend_buffer_type_t ggml_backend_cuda_buffer_type(int device) {
+ggml_backend_buffer_type_t ggml_backend_cuda_buffer_type(int device) {
     if (!llamafile_has_cuda())
         return 0;
     return ggml_cuda.buffer_type(device);
 }
 
-GGML_CALL ggml_backend_buffer_type_t ggml_backend_cuda_host_buffer_type() {
+ggml_backend_buffer_type_t ggml_backend_cuda_host_buffer_type() {
     if (!llamafile_has_cuda())
         return 0;
     return ggml_cuda.host_buffer_type();
 }
 
-GGML_CALL ggml_backend_t ggml_backend_cuda_init(int device) {
+ggml_backend_t ggml_backend_cuda_init(int device) {
     if (!llamafile_has_cuda())
         return 0;
     return ggml_cuda.backend_init(device);
 }
 
-GGML_CALL ggml_backend_buffer_type_t
+ggml_backend_buffer_type_t
 ggml_backend_cuda_split_buffer_type(int main_device, const float *tensor_split) {
     if (!llamafile_has_cuda())
         return 0;
@@ -1012,38 +1012,47 @@ ggml_backend_cuda_split_buffer_type(int main_device, const float *tensor_split) 
 //     return ggml_cuda.reg_devices();
 // }
 
-// Removed: ggml_backend_cuda_get_device_properties no longer exists in new API
-// GGML_CALL void ggml_backend_cuda_get_device_properties(int device, struct ggml_cuda_device_properties * properties) {
-//     if (!llamafile_has_cuda())
-//         return;
-//     return ggml_cuda.get_device_properties(device, properties);
-// }
+// [llamafile] Stub implementation using available APIs
+void ggml_backend_cuda_get_device_properties(int device, struct ggml_cuda_device_properties * properties) {
+    if (!properties)
+        return;
+    memset(properties, 0, sizeof(*properties));
+    if (!llamafile_has_cuda())
+        return;
+    // Get what we can from available APIs
+    char desc[256] = {0};
+    ggml_backend_cuda_get_device_description(device, desc, sizeof(desc));
+    strncpy(properties->name, desc, sizeof(properties->name) - 1);
+    size_t free_mem = 0, total_mem = 0;
+    ggml_backend_cuda_get_device_memory(device, &free_mem, &total_mem);
+    properties->totalGlobalMem = total_mem;
+}
 
-GGML_CALL void ggml_backend_cuda_get_device_memory(int device, size_t *free, size_t *total) {
+void ggml_backend_cuda_get_device_memory(int device, size_t *free, size_t *total) {
     if (!llamafile_has_cuda())
         return;
     return ggml_cuda.get_device_memory(device, free, total);
 }
 
-GGML_CALL int ggml_backend_cuda_get_device_count(void) {
+int ggml_backend_cuda_get_device_count(void) {
     if (!llamafile_has_cuda())
         return 0;
     return ggml_cuda.get_device_count();
 }
 
-GGML_CALL void ggml_backend_cuda_unregister_host_buffer(void *buffer) {
+void ggml_backend_cuda_unregister_host_buffer(void *buffer) {
     if (!llamafile_has_cuda())
         return;
     return ggml_cuda.unreg_host_buf(buffer);
 }
 
-GGML_CALL bool ggml_backend_cuda_register_host_buffer(void *buffer, size_t size) {
+bool ggml_backend_cuda_register_host_buffer(void *buffer, size_t size) {
     if (!llamafile_has_cuda())
         return false;
     return ggml_cuda.register_host_buffer(buffer, size);
 }
 
-GGML_CALL void ggml_backend_cuda_get_device_description(int device, char *description,
+void ggml_backend_cuda_get_device_description(int device, char *description,
                                                         size_t description_size) {
     if (!llamafile_has_cuda())
         return;

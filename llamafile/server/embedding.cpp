@@ -161,9 +161,10 @@ Client::embedding()
     timespec started = timespec_real();
 
     // turn text into tokens
+    const llama_vocab *vocab = llama_model_get_vocab(model_);
     auto toks = new std::vector<llama_token>(params->prompt.size() + 16);
     defer_cleanup(cleanup_token_vector, toks);
-    int count = llama_tokenize(model_,
+    int count = llama_tokenize(vocab,
                                params->prompt.data(),
                                params->prompt.size(),
                                &(*toks)[0],
@@ -185,11 +186,8 @@ Client::embedding()
         count = n_ctx_train;
 
     // initialize context
-    llama_context_params cparams = {};
+    llama_context_params cparams = llama_context_default_params();
     cparams.embeddings = true;
-    cparams.embeddings_only = true;
-    cparams.logits_all = true;
-    cparams.seed = _rand64();
     cparams.n_ctx = count;
     cparams.n_batch = count;
     cparams.n_ubatch = count;
@@ -201,8 +199,7 @@ Client::embedding()
     cparams.pooling_type = LLAMA_POOLING_TYPE_NONE;
     cparams.type_k = GGML_TYPE_F16;
     cparams.type_v = GGML_TYPE_F16;
-    cparams.flash_attn = FLAG_flash_attn;
-    llama_context* ctx = llama_new_context_with_model(model_, cparams);
+    llama_context* ctx = llama_init_from_model(model_, cparams);
     if (!ctx) {
         SLOG("llama_new_context_with_model failed");
         return send_error(500);

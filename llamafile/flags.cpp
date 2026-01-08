@@ -32,7 +32,7 @@
 #include <unistd.h>
 #include <vector>
 
-#include "llama.cpp/cores.cpp"
+#include "llamafile/cores.h"
 #include "llama.cpp/include/llama.h"
 #include "llamafile/macros.h"
 
@@ -134,7 +134,7 @@ static wontreturn void unknown(const char *flag) {
 
 static bool is_valid_chat_template(const char *tmpl) {
     llama_chat_message chat[] = {{"user", "test"}};
-    return llama_chat_apply_template(nullptr, tmpl, chat, 1, true, nullptr, 0) >= 0;
+    return llama_chat_apply_template(tmpl, chat, 1, true, nullptr, 0) >= 0;
 }
 
 void llamafile_get_flags(int argc, char **argv) {

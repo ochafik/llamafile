@@ -30,7 +30,7 @@
 #include "llamafile/server/slots.h"
 #include "llamafile/server/utils.h"
 #include "llamafile/server/worker.h"
-#include "llamafile/string.h"
+#include "llamafile/strlib.h"
 #include "llamafile/vector.h"
 #include <cmath>
 #include <cstring>
@@ -106,7 +106,7 @@ cleanup_response(void* arg)
 static void
 cleanup_sampler(void* arg)
 {
-    llama_sampling_free((llama_sampling_context*)arg);
+    common_sampler_free((common_sampler*)arg);
 }
 
 static void
@@ -141,16 +141,16 @@ generate_id()
     return b;
 }
 
-static llama_sampling_context*
-create_sampler(const V1CompletionParams* params)
+static common_sampler*
+create_sampler(llama_model* model, const V1CompletionParams* params)
 {
-    llama_sampling_params sparams;
+    common_params_sampling sparams;
     sparams.temp = params->temperature;
     sparams.top_p = params->top_p;
     sparams.penalty_freq = params->frequency_penalty;
     sparams.penalty_present = params->presence_penalty;
     sparams.seed = params->seed;
-    return llama_sampling_init(sparams);
+    return common_sampler_init(model, sparams);
 }
 
 static std::string
@@ -417,8 +417,9 @@ Client::v1_completions()
     defer_cleanup(cleanup_response, response);
 
     // add bos token if it's needed
-    if (llama_should_add_bos_token(model_))
-        state->atoms.emplace_back(llama_token_bos(model_));
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+    if (llama_vocab_get_add_bos(vocab))
+        state->atoms.emplace_back(llama_vocab_bos(vocab));
 
     // turn text into tokens
     atomize(model_, &state->atoms, params->prompt, PARSE_SPECIAL);
@@ -431,7 +432,7 @@ Client::v1_completions()
     defer_cleanup(cleanup_slot, this);
 
     // init sampling
-    llama_sampling_context* sampler = create_sampler(params);
+    common_sampler* sampler = create_sampler(model_, params);
     if (!sampler)
         return send_error(500, "failed to create sampler");
     defer_cleanup(cleanup_sampler, sampler);
@@ -479,14 +480,15 @@ Client::v1_completions()
             slot_->eval_token(llamafile_token_eot(model_));
             break;
         }
-        llama_token id = llama_sampling_sample(sampler, slot_->ctx_, NULL);
-        llama_sampling_accept(sampler, slot_->ctx_, id, DONT_APPLY_GRAMMAR);
+        llama_token id = common_sampler_sample(sampler, slot_->ctx_, -1);
+        common_sampler_accept(sampler, id, /* accept_grammar */ false);
         ++completion_tokens;
         if (slot_->eval_token(id) < 0) {
             SLOG("ran out of context window");
             break;
         }
-        if (llama_token_is_eog(model_, id)) {
+        const llama_vocab* vocab = llama_model_get_vocab(model_);
+        if (llama_vocab_is_eog(vocab, id)) {
             finish_reason = "stop";
             break;
         }

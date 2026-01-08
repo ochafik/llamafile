@@ -26,7 +26,7 @@
 #include "llamafile/server/tokenbucket.h"
 #include "llamafile/server/utils.h"
 #include "llamafile/server/worker.h"
-#include "llamafile/string.h"
+#include "llamafile/strlib.h"
 #include "llamafile/threadlocal.h"
 #include "llamafile/trust.h"
 #include "llamafile/version.h"

@@ -21,7 +21,7 @@
 #include <libc/intrin/x86.h>
 #include <sys/auxv.h>
 
-#include "llama.cpp/string.h"
+#include "llama.cpp/common/common.h"
 
 #ifdef __x86_64__
 static void cpuid(unsigned leaf, unsigned subleaf, unsigned *info) {
@@ -81,9 +81,9 @@ std::string llamafile_describe_cpu() {
             id = cpu_name;
     }
 #endif
-    id = replace_all(id, " 96-Cores", "");
-    id = replace_all(id, "(TM)", "");
-    id = replace_all(id, "(R)", "");
+    string_replace_all(id, " 96-Cores", "");
+    string_replace_all(id, "(TM)", "");
+    string_replace_all(id, "(R)", "");
 
     std::string march;
 #ifdef __x86_64__

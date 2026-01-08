@@ -4,13 +4,13 @@
 PKGS += LLAMAFILE_SERVER
 
 LLAMAFILE_SERVER_FILES := $(wildcard llamafile/server/*)
-LLAMAFILE_SERVER_HDRS = $(filter %.h,$(LLAMAFILE_SERVER_FILES))
+LLAMAFILE_SERVER_HDRS = $(filter %.h,$(LLAMAFILE_SERVER_FILES)) $(filter %.hpp,$(LLAMAFILE_SERVER_FILES))
 LLAMAFILE_SERVER_INCS = $(filter %.inc,$(LLAMAFILE_SERVER_FILES))
 LLAMAFILE_SERVER_SRCS = $(filter %.cpp,$(LLAMAFILE_SERVER_FILES))
 LLAMAFILE_SERVER_OBJS = $(LLAMAFILE_SERVER_SRCS:%.cpp=o/$(MODE)/%.o)
 LLAMAFILE_SERVER_ASSETS = $(wildcard llamafile/server/www/*)
 
-$(LLAMAFILE_SERVER_OBJS): private CCFLAGS += -g
+$(LLAMAFILE_SERVER_OBJS): private CCFLAGS += -g -Illama.cpp/vendor
 
 o/$(MODE)/llamafile/server/server.a:						\
 		$(filter-out %_test.o,$(LLAMAFILE_SERVER_OBJS))

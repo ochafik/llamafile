@@ -69,21 +69,14 @@ main(int argc, char* argv[])
         FLAG_log_disable = true;
 
     // load model
-    llama_model_params mparams = {
-        .n_gpu_layers = FLAG_n_gpu_layers,
-        .split_mode = (enum llama_split_mode)FLAG_split_mode,
-        .main_gpu = FLAG_main_gpu,
-        .tensor_split = nullptr,
-        .rpc_servers = nullptr,
-        .progress_callback = nullptr,
-        .progress_callback_user_data = nullptr,
-        .kv_overrides = nullptr,
-        .vocab_only = false,
-        .use_mmap = true,
-        .use_mlock = false,
-        .check_tensors = false,
-    };
-    llama_model* model = llama_load_model_from_file(FLAG_model, mparams);
+    llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = FLAG_n_gpu_layers;
+    mparams.split_mode = (enum llama_split_mode)FLAG_split_mode;
+    mparams.main_gpu = FLAG_main_gpu;
+    mparams.vocab_only = false;
+    mparams.use_mmap = true;
+    mparams.use_mlock = false;
+    llama_model* model = llama_model_load_from_file(FLAG_model, mparams);
     if (!model) {
         fprintf(stderr, "%s: failed to load model\n", FLAG_model);
         exit(1);

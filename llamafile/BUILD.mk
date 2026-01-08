@@ -3,7 +3,9 @@
 
 PKGS += LLAMAFILE
 
-LLAMAFILE_FILES := $(wildcard llamafile/*.*)
+# Get all files first, then filter out chatbot_main (depends on disabled llama.cpp/tools/*)
+LLAMAFILE_FILES_ALL := $(wildcard llamafile/*.*)
+LLAMAFILE_FILES := $(filter-out llamafile/chatbot_main.cpp llamafile/chatbot_main.h,$(LLAMAFILE_FILES_ALL))
 LLAMAFILE_HDRS = $(filter %.h,$(LLAMAFILE_FILES))
 LLAMAFILE_INCS = $(filter %.inc,$(LLAMAFILE_FILES))
 LLAMAFILE_SRCS_C = $(filter %.c,$(LLAMAFILE_FILES))
@@ -22,6 +24,10 @@ $(LLAMAFILE_OBJS): private CCFLAGS += -g
 # this executable defines its own malloc(), free(), etc.
 # therefore we want to avoid it going inside the .a file
 LLAMAFILE_OBJS := $(filter-out o/$(MODE)/llamafile/zipalign.o,$(LLAMAFILE_OBJS))
+
+# Filter out test files - they have main() functions and include cores.cpp
+# which causes multiple definition errors
+LLAMAFILE_OBJS := $(filter-out %_test.o,$(LLAMAFILE_OBJS))
 
 include llamafile/highlight/BUILD.mk
 include llamafile/server/BUILD.mk

@@ -46,6 +46,9 @@ int main(int argc, char **argv) {
 
     ggml_backend_load_all();
 
+    // Enable llamafile GPU detection (FLAGS_READY must be true before llamafile_gpu_layers)
+    FLAGS_READY = true;
+
     // Update n_gpu_layers for llamafile
     params.n_gpu_layers = llamafile_gpu_layers(35);
 
@@ -72,16 +75,15 @@ int main(int argc, char **argv) {
         return 4;
 
     // Evaluate prompt tokens
-    int n_past = 0;
+    // llama_batch_get_one returns a batch with pos=nullptr, which is fine
+    // llama_decode handles sequential position tracking internally
     for (int i = 0; i < (int)prompt_tokens.size(); i += params.n_batch) {
         int n_eval = (int)prompt_tokens.size() - i;
         if (n_eval > params.n_batch)
             n_eval = params.n_batch;
         struct llama_batch batch = llama_batch_get_one(&prompt_tokens[i], n_eval);
-        batch.pos[0] = n_past;
         if (llama_decode(ctx, batch))
             break;
-        n_past += n_eval;
     }
 
     // Main generation loop
@@ -102,10 +104,8 @@ int main(int argc, char **argv) {
 
         // Evaluate the new token
         struct llama_batch batch = llama_batch_get_one(&id, 1);
-        batch.pos[0] = n_past;
         if (llama_decode(ctx, batch))
             break;
-        n_past += 1;
     }
     printf("\n");
 

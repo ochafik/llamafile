@@ -21,11 +21,12 @@
 #include <sys/stat.h>
 #include <vector>
 
-#include "llama.cpp/common.h"
+#include "llama.cpp/common/common.h"
+#include "llama.cpp/include/llama.h"
 #include "llamafile/color.h"
 #include "llamafile/image.h"
 #include "llamafile/llama.h"
-#include "llamafile/string.h"
+#include "llamafile/strlib.h"
 
 namespace lf {
 namespace chatbot {
@@ -83,10 +84,21 @@ void on_upload(const std::vector<std::string> &args) {
             markdown += '\n';
         markdown += "``````";
     }
-    std::vector<llama_chat_msg> chat = {{"system", std::move(markdown)}};
-    if (!eval_string(
-            llama_chat_apply_template(g_model, g_params.chat_template, chat, DONT_ADD_ASSISTANT),
-            DONT_ADD_SPECIAL, PARSE_SPECIAL)) {
+    llama_chat_message msg = {"system", markdown.c_str()};
+    std::vector<llama_chat_message> chat = {msg};
+
+    // Apply chat template - first call to get required size
+    const char *tmpl = g_params.chat_template.empty() ? nullptr : g_params.chat_template.c_str();
+    int32_t size = llama_chat_apply_template(tmpl, chat.data(), chat.size(), DONT_ADD_ASSISTANT, nullptr, 0);
+    if (size < 0) {
+        err("failed to apply chat template");
+        rewind(tokens_used_before);
+        return;
+    }
+    std::string result(size, '\0');
+    llama_chat_apply_template(tmpl, chat.data(), chat.size(), DONT_ADD_ASSISTANT, result.data(), result.size());
+
+    if (!eval_string(result, DONT_ADD_SPECIAL, PARSE_SPECIAL)) {
         rewind(tokens_used_before);
         return;
     }

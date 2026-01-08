@@ -17,7 +17,7 @@
 
 #include "datauri.h"
 #include "llama.cpp/common/base64.hpp"
-#include "llamafile/string.h"
+#include "llamafile/strlib.h"
 #include <cctype>
 
 // See RFC2045 (MIME)
@@ -268,7 +268,7 @@ size_t DataUri::parse(std::string_view s) {
 
 std::string DataUri::decode() {
     if (has_param("base64"))
-        return base64::decode(data);
+        return base64::decode(std::string(data));
     return percent_decode(data);
 }
 

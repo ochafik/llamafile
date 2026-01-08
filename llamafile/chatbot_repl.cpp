@@ -22,12 +22,27 @@
 #include <cstdio>
 #include <string_view>
 
-#include "llama.cpp/common.h"
+#include "llama.cpp/common/common.h"
+#include "llama.cpp/common/sampling.h"
 #include "llama.cpp/include/llama.h"
 #include "llamafile/bestline.h"
 #include "llamafile/color.h"
 #include "llamafile/highlight/highlight.h"
 #include "llamafile/llama.h"
+
+namespace {
+// Helper to apply chat template
+std::string apply_chat_template(const std::string &tmpl,
+                                 const std::vector<llama_chat_message> &chat,
+                                 bool add_assistant) {
+    const char *tmpl_cstr = tmpl.empty() ? nullptr : tmpl.c_str();
+    int32_t size = llama_chat_apply_template(tmpl_cstr, chat.data(), chat.size(), add_assistant, nullptr, 0);
+    if (size < 0) return "";
+    std::string result(size, '\0');
+    llama_chat_apply_template(tmpl_cstr, chat.data(), chat.size(), add_assistant, result.data(), result.size());
+    return result;
+}
+} // namespace
 
 namespace lf {
 namespace chatbot {
@@ -91,16 +106,17 @@ bool out_of_context(int extra) {
     err("error: ran out of context window at %d tokens\n"
         "consider passing `-c %d` at startup for the maximum\n"
         "you can free up more space using /forget or /clear",
-        tokens_used() + extra, llama_n_ctx_train(g_model));
+        tokens_used() + extra, llama_model_n_ctx_train(g_model));
     return false;
 }
 
 void repl() {
+    const llama_vocab *vocab = llama_model_get_vocab(g_model);
 
     // setup conversation
-    if (llama_should_add_bos_token(g_model)) {
+    if (llama_vocab_get_add_bos(vocab)) {
         print_ephemeral("loading bos token...");
-        eval_token(llama_token_bos(g_model));
+        eval_token(llama_token_bos(vocab));
     }
     record_undo();
 
@@ -115,9 +131,9 @@ void repl() {
         if (is_base_model()) {
             msg = g_params.prompt;
         } else {
-            std::vector<llama_chat_msg> chat = {{"system", g_params.prompt}};
-            msg = llama_chat_apply_template(g_model, g_params.chat_template, chat,
-                                            DONT_ADD_ASSISTANT);
+            llama_chat_message sysmsg = {"system", g_params.prompt.c_str()};
+            std::vector<llama_chat_message> chat = {sysmsg};
+            msg = apply_chat_template(g_params.chat_template, chat, DONT_ADD_ASSISTANT);
         }
         if (!eval_string(msg, DONT_ADD_SPECIAL, PARSE_SPECIAL))
             exit(6);
@@ -132,7 +148,7 @@ void repl() {
     HighlightTxt txt;
     HighlightMarkdown markdown;
     ColorBleeder bleeder(is_base_model() ? (Highlight *)&txt : (Highlight *)&markdown);
-    llama_sampling_context *sampler = llama_sampling_init(g_params.sparams);
+    common_sampler *sampler = common_sampler_init(g_model, g_params.sampling);
     signal(SIGINT, on_sigint);
 
     // run chatbot
@@ -170,8 +186,9 @@ void repl() {
         if (is_base_model()) {
             msg = line;
         } else {
-            std::vector<llama_chat_msg> chat = {{get_role_name(g_role), line}};
-            msg = llama_chat_apply_template(g_model, g_params.chat_template, chat, add_assi);
+            llama_chat_message usermsg = {get_role_name(g_role), line};
+            std::vector<llama_chat_message> chat = {usermsg};
+            msg = apply_chat_template(g_params.chat_template, chat, add_assi);
         }
         if (!eval_string(msg, DONT_ADD_SPECIAL, PARSE_SPECIAL)) {
             rewind(tokens_used_before);
@@ -187,11 +204,11 @@ void repl() {
                 eval_token(llamafile_token_eot(g_model));
                 break;
             }
-            llama_token id = llama_sampling_sample(sampler, g_ctx, NULL);
-            llama_sampling_accept(sampler, g_ctx, id, APPLY_GRAMMAR);
+            llama_token id = common_sampler_sample(sampler, g_ctx, -1);
+            common_sampler_accept(sampler, id, APPLY_GRAMMAR);
             if (!eval_token(id))
                 break;
-            if (llama_token_is_eog(g_model, id))
+            if (llama_token_is_eog(vocab, id))
                 break;
             std::string s;
             bleeder.feed(&s, token_to_piece(g_ctx, id, g_params.special));
@@ -207,7 +224,7 @@ void repl() {
     }
 
     // cleanup resources
-    llama_sampling_free(sampler);
+    common_sampler_free(sampler);
 }
 
 } // namespace chatbot

@@ -2,9 +2,9 @@
 
 #include <iterator>
 
-#include "llama.cpp/ggml-cuda.h"
-#include "llama.cpp/string.h"
-#include "llamafile/string.h"
+#include "llama.cpp/ggml/include/ggml-cuda.h"
+#include "llama.cpp/common/common.h"
+#include "llamafile/strlib.h"
 #include "utils.h"
 
 test::test(const cmd_params &inst, const llama_model *lmodel,
@@ -15,7 +15,8 @@ test::test(const cmd_params &inst, const llama_model *lmodel,
     model_type = buf;
     llama_model_meta_val_str(lmodel, "general.name", buf, sizeof(buf));
     model_name = buf;
-    llama_model_quant_str(lmodel, buf, sizeof(buf));
+    // llama_model_quant_str(lmodel, buf, sizeof(buf)); // TODO: API removed
+    buf[0] = 0;
     model_quant_str = buf;
     model_size = llama_model_size(lmodel);
     model_n_params = llama_model_n_params(lmodel);
@@ -69,7 +70,7 @@ void test::run() {
         curr_run = i;
         t_processed = 0;
         t_gen = 0;
-        llama_kv_cache_clear(ctx);
+        llama_memory_clear(llama_get_memory(ctx), false);
 
         time_interval interval;
         interval.start = utils::get_time_ns();
@@ -94,7 +95,8 @@ void test::test_prompt() {
     llama_set_n_threads(ctx, n_threads, n_threads);
 
     const llama_model *model = llama_get_model(ctx);
-    const int32_t n_vocab = llama_n_vocab(model);
+    const llama_vocab *vocab = llama_model_get_vocab(model);
+    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
 
     std::vector<llama_token> tokens(n_batch);
 
@@ -107,14 +109,14 @@ void test::test_prompt() {
 
     while (n_processed < n_prompt) {
         int n_tokens = std::min(n_prompt - n_processed, n_batch);
-        tokens[0] = n_processed == 0 && llama_add_bos_token(model)
-                        ? llama_token_bos(model)
+        tokens[0] = n_processed == 0 && llama_vocab_get_add_bos(vocab)
+                        ? llama_vocab_bos(vocab)
                         : std::rand() % n_vocab;
         for (int i = 1; i < n_tokens; i++) {
             tokens[i] = std::rand() % n_vocab;
         }
         llama_decode(
-            ctx, llama_batch_get_one(tokens.data(), n_tokens, n_processed, 0));
+            ctx, llama_batch_get_one(tokens.data(), n_tokens));
         n_processed += n_tokens;
         t_processed = n_processed;
     }
@@ -128,10 +130,11 @@ void test::test_gen() {
     llama_set_n_threads(ctx, n_threads, n_threads);
 
     const llama_model *model = llama_get_model(ctx);
-    const int32_t n_vocab = llama_n_vocab(model);
+    const llama_vocab *vocab = llama_model_get_vocab(model);
+    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
 
-    llama_token token = llama_add_bos_token(model) ? llama_token_bos(model)
-                                                   : std::rand() % n_vocab;
+    llama_token token = llama_vocab_get_add_bos(vocab) ? llama_vocab_bos(vocab)
+                                                       : std::rand() % n_vocab;
 
     time_interval interval;
     interval.start = utils::get_time_ns();
@@ -139,7 +142,7 @@ void test::test_gen() {
     gen_intervals.push_back(interval);
 
     for (int i = 0; i < n_gen; i++) {
-        llama_decode(ctx, llama_batch_get_one(&token, 1, n_prompt + i, 0));
+        llama_decode(ctx, llama_batch_get_one(&token, 1));
         llama_synchronize(ctx);
         if (i == 0) {
             uint64_t ttft = utils::get_time_ns() - test_intervals.back().start;

@@ -22,7 +22,7 @@
 #include "llamafile/image.h"
 #include "llamafile/llama.h"
 #include "llamafile/server/image.h"
-#include "llamafile/string.h"
+#include "llamafile/strlib.h"
 #include <string>
 #include <vector>
 

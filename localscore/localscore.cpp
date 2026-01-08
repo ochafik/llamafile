@@ -39,12 +39,12 @@
 #include "localscore.h"
 
 #include "llama.cpp/cores.h"
-#include "llama.cpp/ggml.h"
-#include "llama.cpp/ggml-metal.h"
-#include "llama.cpp/llama.h"
-#include "llama.cpp/string.h"
-#include "llama.cpp/common.h"
-#include "llama.cpp/ggml-cuda.h"
+#include "llama.cpp/ggml/include/ggml.h"
+#include "llama.cpp/ggml/include/ggml-metal.h"
+#include "llama.cpp/include/llama.h"
+#include "llama.cpp/common/common.h"
+#include "llama.cpp/common/common.h"
+#include "llama.cpp/ggml/include/ggml-cuda.h"
 
 #include "llamafile/llamafile.h"
 #include "llamafile/compute.h"
@@ -138,32 +138,33 @@ static void warmup_run(llama_model *model, llama_context *ctx, cmd_params inst) 
     int n_prompt = inst.n_prompt;
     int n_gen = inst.n_gen;
 
-    const int32_t n_vocab = llama_n_vocab(model);
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
     std::vector<llama_token> tokens(n_batch);
 
-    llama_kv_cache_clear(ctx);
+    llama_memory_clear(llama_get_memory(ctx), false);
 
     // warmup prompt
     while (n_processed < n_prompt) {
         int n_tokens = std::min(n_prompt - n_processed, n_batch);
-        tokens[0] = n_processed == 0 && llama_add_bos_token(model)
-                        ? llama_token_bos(model)
+        tokens[0] = n_processed == 0 && llama_vocab_get_add_bos(vocab)
+                        ? llama_vocab_bos(vocab)
                         : std::rand() % n_vocab;
         for (int i = 1; i < n_tokens; i++) {
             tokens[i] = std::rand() % n_vocab;
         }
         llama_decode(
-            ctx, llama_batch_get_one(tokens.data(), n_tokens, n_processed, 0));
+            ctx, llama_batch_get_one(tokens.data(), n_tokens));
         n_processed += n_tokens;
     }
 
     llama_synchronize(ctx);
 
     // warmup gen
-    llama_token token = llama_add_bos_token(model) ? llama_token_bos(model)
-                                                   : std::rand() % n_vocab;
+    llama_token token = llama_vocab_get_add_bos(vocab) ? llama_vocab_bos(vocab)
+                                                       : std::rand() % n_vocab;
     for (int i = 0; i < n_gen; i++) {
-        llama_decode(ctx, llama_batch_get_one(&token, 1, n_prompt + i, 0));
+        llama_decode(ctx, llama_batch_get_one(&token, 1));
         llama_synchronize(ctx);
         token = std::rand() % n_vocab;
     }
@@ -412,7 +413,7 @@ void setup_initial_environment(int* argc, char*** argv, cmd_params* params, Syst
 void initialize_llama_backend(const cmd_params& params) {
     if (!params.verbose) {
         llama_log_set(llama_null_log_callback, NULL);
-        ggml_backend_metal_log_set_callback(llama_null_log_callback, NULL);
+        // ggml_backend_metal_log_set_callback removed in new API
     }
     llama_backend_init();
     llama_numa_init(params.numa);

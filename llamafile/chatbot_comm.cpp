@@ -29,7 +29,7 @@ namespace chatbot {
 
 void on_stats(const std::vector<std::string> &args) {
     FLAG_log_disable = false;
-    llama_print_timings(g_ctx);
+    llama_perf_context_print(g_ctx);
     FLAG_log_disable = true;
 }
 

@@ -19,8 +19,9 @@
 #include <type_traits>
 #if defined __x86_64__ || defined __aarch64__
 
-#include "llama.cpp/ggml-impl.h"
-#include "llama.cpp/ggml-quants.h"
+#include "llama.cpp/ggml/src/ggml-impl.h"
+#include "llama.cpp/ggml/src/ggml-quants.h"
+#include "llama.cpp/ggml/src/ggml-cpu/ggml-cpu-impl.h"
 #include "sgemm.h"
 
 // For i-quants, I had to explicitely specify which
@@ -38,7 +39,21 @@
 #endif
 
 #define GGML_COMMON_IMPL_C
-#include "llama.cpp/ggml-common.h"
+#include "llama.cpp/ggml/src/ggml-common.h"
+
+// llamafile-specific packed block types for ARM performance optimization
+// [kawrakow] Need these two for performance on Arm
+typedef struct {
+    ggml_half d[8];
+    int8_t qs[4*QK8_1];
+} block_q8_1_x4;
+static_assert(sizeof(block_q8_1_x4) == 4*sizeof(block_q8_1), "wrong q8_1_x4 block size/padding");
+
+typedef struct {
+    ggml_half d[4];
+    int8_t qs[4*QK8_0];
+} block_q8_0_x4;
+static_assert(sizeof(block_q8_0_x4) == 4*sizeof(block_q8_0), "wrong q8_0_x4 block size/padding");
 
 // clang-format off
 

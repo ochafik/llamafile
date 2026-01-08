@@ -275,7 +275,7 @@ class MixMul {
         if (thought->type != ggml_type_trait<TB>::id)
             quantize_thought(ggml_type_trait<TB>::id);
         build_row_pointers(ggml_type_trait<TB>::id);
-        ggml_barrier(params);
+        ggml_barrier(params->threadpool);
         assert(!(cols % BS));
         assert(!(weights->nb[1] % sizeof(TA)));
         // TODO(jart): parallelize this loop

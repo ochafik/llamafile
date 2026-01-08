@@ -17,13 +17,12 @@
 
 #include "chatbot.h"
 #include "llama.cpp/common/base64.hpp"
-#include "llama.cpp/common.h"
+#include "llama.cpp/common/common.h"
 #include "llama.cpp/include/llama.h"
-#include "llama.cpp/tools/mtmd/clip.h"
 #include "llamafile/datauri.h"
 #include "llamafile/image.h"
 #include "llamafile/llama.h"
-#include "llamafile/string.h"
+#include "llamafile/strlib.h"
 #include <cassert>
 #include <string>
 #include <vector>
@@ -46,7 +45,7 @@ bool eval_tokens(std::vector<llama_token> tokens) {
         int n_eval = (int)tokens.size() - i;
         if (n_eval > g_params.n_batch)
             n_eval = g_params.n_batch;
-        if (llama_decode(g_ctx, llama_batch_get_one(&tokens[i], n_eval, tokens_used(), 0)))
+        if (llama_decode(g_ctx, llama_batch_get_one(&tokens[i], n_eval)))
             return out_of_context(n_eval);
         g_history.insert(g_history.end(), tokens.begin() + i, tokens.begin() + i + n_eval);
     }
@@ -60,53 +59,12 @@ bool eval_tokens(std::vector<llama_token> tokens) {
     return true;
 }
 
-bool eval_image_embed(const llava_image_embed *image_embed) {
-    int N = image_embed->n_image_pos;
-    if (tokens_used() + N > llama_n_ctx(g_ctx))
-        return out_of_context(N);
-    int n_embd = llama_n_embd(llama_get_model(g_ctx));
-    for (int i = 0; i < N; i += g_params.n_batch) {
-        if (g_got_sigint) {
-            g_got_sigint = false;
-            clear_ephemeral();
-            return false;
-        }
-        if (N > g_params.n_batch)
-            print_ephemeral(format("loading image %d%%...", (int)((double)i / N * 100)));
-        int n_eval = N - i;
-        if (n_eval > g_params.n_batch)
-            n_eval = g_params.n_batch;
-        llama_batch batch = {
-            .n_tokens = n_eval,
-            .embd = image_embed->embed + i * n_embd,
-            .all_pos_0 = tokens_used(),
-            .all_pos_1 = 1,
-            .all_seq_id = 0,
-        };
-        if (llama_decode(g_ctx, batch))
-            return out_of_context(n_eval);
-        for (int i = 0; i < n_eval; ++i)
-            g_history.push_back(IMAGE_PLACEHOLDER_TOKEN);
-    }
-    clear_ephemeral();
-    llama_synchronize(g_ctx);
-    return true;
-}
-
+// TODO: Migrate to mtmd API for multimodal support
+// The old llava_image_embed API has been replaced with mtmd in the new llama.cpp
 bool eval_image(const std::string_view binary) {
-    unassert(g_clip);
-    llava_image_embed *image_embed;
-    print_ephemeral("analyzing image...");
-    image_embed = llava_image_embed_make_with_bytes(
-        g_clip, FLAG_threads_batch, (const unsigned char *)binary.data(), binary.size());
-    clear_ephemeral();
-    if (!image_embed) {
-        err("failed to load image");
-        return false;
-    }
-    bool ok = eval_image_embed(image_embed);
-    llava_image_embed_free(image_embed);
-    return ok;
+    (void)binary;
+    err("image support requires migration to mtmd API");
+    return false;
 }
 
 bool eval_token(int id) {

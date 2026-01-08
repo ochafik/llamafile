@@ -16,21 +16,25 @@
 // limitations under the License.
 
 #include "client.h"
+#include "chat.h"
 #include "llama.cpp/include/llama.h"
 #include "llama.cpp/common/sampling.h"
+#include "llama.cpp/vendor/nlohmann/json.hpp"
 #include "llamafile/json.h"
 #include "llamafile/llama.h"
+#include "llamafile/llamafile.h"
 #include "llamafile/macros.h"
 #include "llamafile/server/atom.h"
 #include "llamafile/server/cleanup.h"
 #include "llamafile/server/fastjson.h"
+#include "llamafile/server/json-schema-to-grammar.h"
 #include "llamafile/server/log.h"
 #include "llamafile/server/server.h"
 #include "llamafile/server/slot.h"
 #include "llamafile/server/slots.h"
 #include "llamafile/server/utils.h"
 #include "llamafile/server/worker.h"
-#include "llamafile/string.h"
+#include <string.h>
 #include "llamafile/vector.h"
 #include <cassert>
 #include <cmath>
@@ -42,6 +46,74 @@ using jt::Json;
 
 namespace lf {
 namespace server {
+
+// Helper to convert JSON schema string to grammar
+static std::string json_schema_string_to_grammar(const std::string& schema_str)
+{
+    auto schema = nlohmann::ordered_json::parse(schema_str);
+    return json_schema_to_grammar(schema);
+}
+
+// Helper wrapper for llama_chat_apply_template that works with the new API
+static std::string apply_chat_template(
+    const llama_model* model,
+    const char* tmpl,
+    const std::vector<llama_chat_message>& messages,
+    bool add_ass)
+{
+    // Get template from model if not provided
+    std::string template_str;
+    if (!tmpl || !*tmpl) {
+        char buf[4096];
+        int n = llama_model_meta_val_str(model, "tokenizer.chat_template", buf, sizeof(buf));
+        if (n > 0) {
+            template_str.assign(buf, n);
+            tmpl = template_str.c_str();
+        } else {
+            // Fall back to chatml
+            tmpl = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}";
+        }
+    }
+
+    // First call to get the required size
+    int len = llama_chat_apply_template(tmpl, messages.data(), messages.size(), add_ass, nullptr, 0);
+    if (len < 0) {
+        return "";
+    }
+
+    std::string result(len, '\0');
+    llama_chat_apply_template(tmpl, messages.data(), messages.size(), add_ass, &result[0], len);
+    return result;
+}
+
+// Chat message with owned strings
+struct ChatMessage {
+    std::string role;
+    std::string content;
+};
+
+// Convert ChatMessage vector to common_chat_msg vector for tool calling
+static std::vector<common_chat_msg> to_common_chat_msgs(const std::vector<ChatMessage>& messages) {
+    std::vector<common_chat_msg> result;
+    result.reserve(messages.size());
+    for (const auto& msg : messages) {
+        common_chat_msg chat_msg;
+        chat_msg.role = msg.role;
+        chat_msg.content = msg.content;
+        result.push_back(std::move(chat_msg));
+    }
+    return result;
+}
+
+// Generate a unique tool call ID
+static std::string generate_tool_call_id() {
+    std::string id = "call_";
+    for (int i = 0; i < 8; ++i) {
+        uint64_t w = _rand64();
+        id += "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"[w % 62];
+    }
+    return id;
+}
 
 struct V1ChatCompletionParams
 {
@@ -55,9 +127,15 @@ struct V1ChatCompletionParams
     double frequency_penalty = 0;
     std::string user;
     std::string model;
-    std::vector<llama_chat_msg> messages;
+    std::vector<ChatMessage> messages;
     std::vector<std::vector<Atom>> stop;
     std::string grammar;
+    // Tool calling support
+    std::vector<common_chat_tool> tools;
+    common_chat_tool_choice tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
+    bool parallel_tool_calls = false;
+    // Chat format detected from template (for parsing tool calls)
+    common_chat_format chat_format = COMMON_CHAT_FORMAT_CONTENT_ONLY;
 
     void add_stop(llama_model* model, const std::string& text)
     {
@@ -71,6 +149,17 @@ struct V1ChatCompletionParams
             if (vector_ends_with(history, suffix))
                 return true;
         return false;
+    }
+
+    // Convert to llama_chat_message format (pointers valid while this struct exists)
+    std::vector<llama_chat_message> to_llama_messages() const
+    {
+        std::vector<llama_chat_message> result;
+        result.reserve(messages.size());
+        for (const auto& msg : messages) {
+            result.push_back({msg.role.c_str(), msg.content.c_str()});
+        }
+        return result;
     }
 };
 
@@ -108,7 +197,7 @@ cleanup_response(void* arg)
 static void
 cleanup_sampler(void* arg)
 {
-    llama_sampling_free((llama_sampling_context*)arg);
+    common_sampler_free((common_sampler*)arg);
 }
 
 static void
@@ -143,17 +232,17 @@ generate_id()
     return b;
 }
 
-static llama_sampling_context*
-create_sampler(const V1ChatCompletionParams* params)
+static common_sampler*
+create_sampler(const llama_model* model, const V1ChatCompletionParams* params)
 {
-    llama_sampling_params sparams;
+    common_params_sampling sparams;
     sparams.temp = params->temperature;
     sparams.top_p = params->top_p;
     sparams.penalty_freq = params->frequency_penalty;
     sparams.penalty_present = params->presence_penalty;
     sparams.seed = params->seed;
     sparams.grammar = params->grammar;
-    return llama_sampling_init(sparams);
+    return common_sampler_init(model, sparams);
 }
 
 static std::string
@@ -175,10 +264,10 @@ has_images(const std::vector<Atom>& atoms)
 }
 
 static int
-count_bytes(const std::vector<llama_chat_msg>& messages)
+count_bytes(const std::vector<ChatMessage>& messages)
 {
     int n = 0;
-    for (const llama_chat_msg& message : messages)
+    for (const ChatMessage& message : messages)
         n += message.content.size();
     return n;
 }
@@ -206,24 +295,18 @@ Client::get_v1_chat_completions_params(V1ChatCompletionParams* params)
         return send_error(400, "JSON body must be an object");
 
     // fields openai documents that we don't support yet
-    if (json.contains("tools"))
-        return send_error(400, "OpenAI tools field not supported yet");
     if (json.contains("audio"))
         return send_error(400, "OpenAI audio field not supported yet");
     if (json.contains("logprobs"))
         return send_error(400, "OpenAI logprobs field not supported yet");
     if (json.contains("functions"))
-        return send_error(400, "OpenAI functions field not supported yet");
+        return send_error(400, "OpenAI functions field (deprecated) not supported, use tools instead");
     if (json.contains("modalities"))
         return send_error(400, "OpenAI modalities field not supported yet");
-    if (json.contains("tool_choice"))
-        return send_error(400, "OpenAI tool_choice field not supported yet");
     if (json.contains("top_logprobs"))
         return send_error(400, "OpenAI top_logprobs field not supported yet");
     if (json.contains("function_call"))
-        return send_error(400, "OpenAI function_call field not supported yet");
-    if (json.contains("parallel_tool_calls"))
-        return send_error(400, "parallel_tool_calls field not supported yet");
+        return send_error(400, "OpenAI function_call field (deprecated) not supported, use tool_choice instead");
 
     // model: string
     Json& model = json["model"];
@@ -509,6 +592,79 @@ Client::get_v1_chat_completions_params(V1ChatCompletionParams* params)
         }
     }
 
+    // tools: array<object>|null
+    //
+    // A list of tools the model may call. Currently, only functions are
+    // supported as a tool. Use this to provide a list of functions the model
+    // may generate JSON inputs for.
+    Json& tools = json["tools"];
+    if (!tools.isNull()) {
+        if (!tools.isArray())
+            return send_error(400, "tools must be an array");
+        std::vector<Json>& tools_array = tools.getArray();
+        for (Json& tool : tools_array) {
+            if (!tool.isObject())
+                return send_error(400, "each tool must be an object");
+            Json& type = tool["type"];
+            if (!type.isString() || type.getString() != "function")
+                return send_error(400, "tool type must be 'function'");
+            Json& function = tool["function"];
+            if (!function.isObject())
+                return send_error(400, "tool function must be an object");
+            Json& name = function["name"];
+            if (!name.isString())
+                return send_error(400, "tool function name must be a string");
+            common_chat_tool chat_tool;
+            chat_tool.name = name.getString();
+            if (function["description"].isString())
+                chat_tool.description = function["description"].getString();
+            if (function["parameters"].isObject())
+                chat_tool.parameters = function["parameters"].toString();
+            else
+                chat_tool.parameters = "{}";
+            params->tools.push_back(std::move(chat_tool));
+        }
+    }
+
+    // tool_choice: string|object|null
+    //
+    // Controls which (if any) tool is called by the model.
+    // "none" means the model will not call any tool.
+    // "auto" means the model can pick between generating a message or calling tools.
+    // "required" means the model must call one or more tools.
+    // Or specify a particular tool: {"type": "function", "function": {"name": "my_function"}}
+    Json& tool_choice = json["tool_choice"];
+    if (!tool_choice.isNull()) {
+        if (tool_choice.isString()) {
+            std::string choice = tool_choice.getString();
+            if (choice == "none") {
+                params->tool_choice = COMMON_CHAT_TOOL_CHOICE_NONE;
+            } else if (choice == "auto") {
+                params->tool_choice = COMMON_CHAT_TOOL_CHOICE_AUTO;
+            } else if (choice == "required") {
+                params->tool_choice = COMMON_CHAT_TOOL_CHOICE_REQUIRED;
+            } else {
+                return send_error(400, "tool_choice must be 'none', 'auto', 'required', or an object");
+            }
+        } else if (tool_choice.isObject()) {
+            // Specific tool choice - treat as required for now
+            // TODO: Could filter grammar to only allow this specific function
+            params->tool_choice = COMMON_CHAT_TOOL_CHOICE_REQUIRED;
+        } else {
+            return send_error(400, "tool_choice must be string or object");
+        }
+    }
+
+    // parallel_tool_calls: boolean|null
+    //
+    // Whether to enable parallel function calling during tool use.
+    Json& parallel_tool_calls = json["parallel_tool_calls"];
+    if (!parallel_tool_calls.isNull()) {
+        if (!parallel_tool_calls.isBool())
+            return send_error(400, "parallel_tool_calls must be boolean");
+        params->parallel_tool_calls = parallel_tool_calls.getBool();
+    }
+
     return true;
 }
 
@@ -527,15 +683,52 @@ Client::v1_chat_completions()
     V1ChatCompletionResponse* response = new V1ChatCompletionResponse;
     defer_cleanup(cleanup_response, response);
 
+    // Initialize chat templates for tool support
+    common_chat_templates_ptr chat_templates;
+    if (!params->tools.empty()) {
+        chat_templates = common_chat_templates_init(model_, FLAG_chat_template ? FLAG_chat_template : "");
+    }
+
     // turn prompt into atom array that'll fit in context window
     for (;;) {
         // add bos token if it's needed
-        if (llama_should_add_bos_token(model_))
-            state->atoms.emplace_back(llama_token_bos(model_));
+        const llama_vocab* vocab = llama_model_get_vocab(model_);
+        if (llama_vocab_get_add_bos(vocab) && params->tools.empty())
+            state->atoms.emplace_back(llama_vocab_bos(vocab));
 
         // turn text into tokens
-        state->prompt = llama_chat_apply_template(
-          model_, FLAG_chat_template, params->messages, ADD_ASSISTANT);
+        if (!params->tools.empty() && chat_templates) {
+            // Use chat templates with tool support
+            common_chat_templates_inputs inputs;
+            inputs.messages = to_common_chat_msgs(params->messages);
+            inputs.tools = params->tools;
+            inputs.tool_choice = params->tool_choice;
+            inputs.parallel_tool_calls = params->parallel_tool_calls;
+            inputs.add_generation_prompt = true;
+            inputs.use_jinja = true;
+            if (!params->grammar.empty()) {
+                inputs.grammar = params->grammar;
+            }
+
+            common_chat_params chat_params = common_chat_templates_apply(chat_templates.get(), inputs);
+            state->prompt = chat_params.prompt;
+            params->chat_format = chat_params.format;
+
+            // Apply grammar from chat template if tools provided and no explicit grammar
+            if (params->grammar.empty() && !chat_params.grammar.empty()) {
+                params->grammar = chat_params.grammar;
+            }
+
+            // Add any additional stop sequences from chat template
+            for (const auto& stop : chat_params.additional_stops) {
+                params->add_stop(model_, stop);
+            }
+        } else {
+            // Use simple template application (no tools)
+            auto llama_msgs = params->to_llama_messages();
+            state->prompt = apply_chat_template(
+              model_, FLAG_chat_template, llama_msgs, ADD_ASSISTANT);
+        }
         atomize(model_, &state->atoms, state->prompt, PARSE_SPECIAL);
 
         // we don't support multiple images yet
@@ -596,7 +789,7 @@ Client::v1_chat_completions()
     }
 
     // init sampling
-    llama_sampling_context* sampler = create_sampler(params);
+    common_sampler* sampler = create_sampler(model_, params);
     if (!sampler)
         return send_error(500, "failed to create sampler");
     defer_cleanup(cleanup_sampler, sampler);
@@ -671,14 +864,14 @@ Client::v1_chat_completions()
             slot_->eval_token(llamafile_token_eot(model_));
             break;
         }
-        llama_token id = llama_sampling_sample(sampler, slot_->ctx_, NULL);
-        llama_sampling_accept(sampler, slot_->ctx_, id, APPLY_GRAMMAR);
+        llama_token id = common_sampler_sample(sampler, slot_->ctx_, -1);
+        common_sampler_accept(sampler, id, /* accept_grammar */ true);
         ++completion_tokens;
         if (slot_->eval_token(id) < 0) {
             SLOG("ran out of context window");
             break;
         }
-        if (llama_token_is_eog(model_, id)) {
+        if (llama_vocab_is_eog(llama_model_get_vocab(model_), id)) {
             finish_reason = "stop";
             break;
         }
@@ -707,10 +900,36 @@ Client::v1_chat_completions()
             }
         }
     }
+    // Parse tool calls from the generated content if tools were provided
+    common_chat_msg parsed_msg;
+    bool has_tool_calls = false;
+    if (!params->tools.empty() && params->chat_format != COMMON_CHAT_FORMAT_CONTENT_ONLY) {
+        common_chat_syntax syntax;
+        syntax.format = params->chat_format;
+        syntax.parse_tool_calls = true;
+        try {
+            parsed_msg = common_chat_parse(response->content, false, syntax);
+            has_tool_calls = !parsed_msg.tool_calls.empty();
+            if (has_tool_calls) {
+                finish_reason = "tool_calls";
+                // Assign IDs to tool calls that don't have them
+                for (auto& tc : parsed_msg.tool_calls) {
+                    if (tc.id.empty()) {
+                        tc.id = generate_tool_call_id();
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            SLOG("warning: failed to parse tool calls: %s", e.what());
+            // Continue without tool calls if parsing fails
+        }
+    }
+
     choice["finish_reason"] = finish_reason;
-    SLOG("predicted %d tokens finished on %s", //
+    SLOG("predicted %d tokens finished on %s%s", //
          completion_tokens,
-         finish_reason);
+         finish_reason,
+         has_tool_calls ? " (with tool calls)" : "");
 
     // finalize response
     cleanup_slot(this);
@@ -736,7 +955,25 @@ Client::v1_chat_completions()
         usage["completion_tokens"] = completion_tokens;
         usage["total_tokens"] = completion_tokens + prompt_tokens;
         choice["message"]["role"] = "assistant";
-        choice["message"]["content"] = std::move(response->content);
+
+        if (has_tool_calls) {
+            // Format tool calls in OpenAI-compatible format
+            choice["message"]["content"] = parsed_msg.content.empty() ? Json() : Json(parsed_msg.content);
+            Json& tool_calls = choice["message"]["tool_calls"];
+            tool_calls.setArray();
+            for (size_t i = 0; i < parsed_msg.tool_calls.size(); ++i) {
+                const auto& tc = parsed_msg.tool_calls[i];
+                Json tool_call;
+                tool_call["id"] = tc.id;
+                tool_call["type"] = "function";
+                tool_call["function"]["name"] = tc.name;
+                tool_call["function"]["arguments"] = tc.arguments;
+                tool_calls.getArray().push_back(std::move(tool_call));
+            }
+        } else {
+            choice["message"]["content"] = std::move(response->content);
+        }
+
         response->json["created"] = timespec_real().tv_sec;
         char* p = append_http_response_message(obuf_.p, 200);
         p = stpcpy(p, "Content-Type: application/json\r\n");

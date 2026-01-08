@@ -32,50 +32,72 @@
 #include <time.h>
 #include <unistd.h>
 
-__static_yoink("llama.cpp/ggml.h");
+// Core headers from native llama.cpp structure
+__static_yoink("llama.cpp/ggml/include/ggml.h");
+__static_yoink("llama.cpp/ggml/include/ggml-alloc.h");
+__static_yoink("llama.cpp/ggml/include/ggml-backend.h");
+__static_yoink("llama.cpp/ggml/include/ggml-metal.h");
+__static_yoink("llama.cpp/ggml/include/gguf.h");
+__static_yoink("llama.cpp/ggml/src/ggml-impl.h");
+__static_yoink("llama.cpp/ggml/src/ggml-backend-impl.h");
+__static_yoink("llama.cpp/ggml/src/ggml-common.h");
+__static_yoink("llama.cpp/ggml/src/ggml-quants.h");
 __static_yoink("llamafile/llamafile.h");
-__static_yoink("llama.cpp/ggml-impl.h");
-__static_yoink("llama.cpp/ggml-alloc.h");
-__static_yoink("llama.cpp/ggml-metal.m");
-__static_yoink("llama.cpp/ggml-metal.h");
-__static_yoink("llama.cpp/ggml-common.h");
-__static_yoink("llama.cpp/ggml-quants.h");
-__static_yoink("llama.cpp/ggml-backend.h");
-__static_yoink("llama.cpp/ggml-metal.metal");
-__static_yoink("llama.cpp/ggml-backend-impl.h");
+// Metal-specific sources
+__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal.cpp");
+__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-common.cpp");
+__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-common.h");
+__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-context.h");
+__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-context.m");
+__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-device.cpp");
+__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-device.h");
+__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-device.m");
+__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-impl.h");
+__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp");
+__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.h");
+__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal.metal");
 
 static const struct Source {
     const char *zip;
     const char *name;
 } srcs[] = {
-    {"/zip/llama.cpp/ggml.h", "ggml.h"},
-    {"/zip/llamafile/llamafile.h", "llamafile.h"},
-    {"/zip/llama.cpp/ggml-impl.h", "ggml-impl.h"},
-    {"/zip/llama.cpp/ggml-metal.h", "ggml-metal.h"},
-    {"/zip/llama.cpp/ggml-alloc.h", "ggml-alloc.h"},
-    {"/zip/llama.cpp/ggml-common.h", "ggml-common.h"},
-    {"/zip/llama.cpp/ggml-quants.h", "ggml-quants.h"},
-    {"/zip/llama.cpp/ggml-backend.h", "ggml-backend.h"},
-    {"/zip/llama.cpp/ggml-metal.metal", "ggml-metal.metal"},
-    {"/zip/llama.cpp/ggml-backend-impl.h", "ggml-backend-impl.h"},
-    {"/zip/llama.cpp/ggml-metal.m", "ggml-metal.m"}, // must come last
+    // All files extracted preserving llama.cpp/ path structure for include compatibility
+    // Core headers
+    {"/zip/llama.cpp/ggml/include/ggml.h", "llama.cpp/ggml/include/ggml.h"},
+    {"/zip/llama.cpp/ggml/include/ggml-alloc.h", "llama.cpp/ggml/include/ggml-alloc.h"},
+    {"/zip/llama.cpp/ggml/include/ggml-backend.h", "llama.cpp/ggml/include/ggml-backend.h"},
+    {"/zip/llama.cpp/ggml/include/ggml-metal.h", "llama.cpp/ggml/include/ggml-metal.h"},
+    {"/zip/llama.cpp/ggml/include/gguf.h", "llama.cpp/ggml/include/gguf.h"},
+    // Internal headers
+    {"/zip/llama.cpp/ggml/src/ggml-impl.h", "llama.cpp/ggml/src/ggml-impl.h"},
+    {"/zip/llama.cpp/ggml/src/ggml-backend-impl.h", "llama.cpp/ggml/src/ggml-backend-impl.h"},
+    {"/zip/llama.cpp/ggml/src/ggml-common.h", "llama.cpp/ggml/src/ggml-common.h"},
+    {"/zip/llama.cpp/ggml/src/ggml-quants.h", "llama.cpp/ggml/src/ggml-quants.h"},
+    {"/zip/llamafile/llamafile.h", "llamafile/llamafile.h"},
+    // Metal headers
+    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-common.h", "llama.cpp/ggml/src/ggml-metal/ggml-metal-common.h"},
+    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-context.h", "llama.cpp/ggml/src/ggml-metal/ggml-metal-context.h"},
+    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-device.h", "llama.cpp/ggml/src/ggml-metal/ggml-metal-device.h"},
+    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-impl.h", "llama.cpp/ggml/src/ggml-metal/ggml-metal-impl.h"},
+    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.h", "llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.h"},
+    // Metal shaders
+    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal.metal", "llama.cpp/ggml/src/ggml-metal/ggml-metal.metal"},
+    // Metal sources (compiled into .dylib)
+    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-common.cpp", "llama.cpp/ggml/src/ggml-metal/ggml-metal-common.cpp"},
+    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-context.m", "llama.cpp/ggml/src/ggml-metal/ggml-metal-context.m"},
+    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-device.cpp", "llama.cpp/ggml/src/ggml-metal/ggml-metal-device.cpp"},
+    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-device.m", "llama.cpp/ggml/src/ggml-metal/ggml-metal-device.m"},
+    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp", "llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp"},
+    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal.cpp", "llama.cpp/ggml/src/ggml-metal/ggml-metal.cpp"}, // main file last
 };
-
-ggml_backend_t ggml_backend_reg_metal_init(const char *, void *);
 
 static struct Metal {
     bool supported;
     atomic_uint once;
-    // typeof(ggml_metal_link) *ggml_metal_link;  // Removed: API changed
     typeof(ggml_backend_metal_init) *backend_init;
-    // typeof(ggml_backend_metal_buffer_type) *GGML_CALL backend_buffer_type;  // Removed: API changed
-    // typeof(ggml_backend_metal_buffer_from_ptr) *GGML_CALL backend_buffer_from_ptr;  // Removed: API changed
     typeof(ggml_backend_is_metal) *backend_is_metal;
-    // typeof(ggml_backend_metal_set_n_cb) *backend_set_n_cb;  // Removed: API changed
-    typeof(ggml_backend_metal_set_abort_callback) *set_abort_callback;  // Changed from log_set_callback
-    typeof(ggml_backend_reg_metal_init) *reg_init;
-    // typeof(ggml_backend_metal_get_device_properties) *get_device_properties;  // Removed: API changed
-    // typeof(ggml_backend_metal_get_device_memory_usage) *get_device_memory_usage;  // Removed: API changed
+    typeof(ggml_backend_metal_set_abort_callback) *set_abort_callback;
+    typeof(ggml_backend_metal_reg) *reg;  // Returns ggml_backend_reg_t
     typeof(ggml_backend_metal_supports_family) *supports_family;
 } ggml_metal;
 
@@ -92,18 +114,111 @@ static bool FileExists(const char *path) {
     return !stat(path, &st);
 }
 
-static bool BuildMetal(const char *dso) {
-
-    // extract source code
-    char src[PATH_MAX];
-    bool needs_rebuild = false;
-    for (int i = 0; i < sizeof(srcs) / sizeof(*srcs); ++i) {
-        llamafile_get_app_dir(src, PATH_MAX);
-        if (!i && makedirs(src, 0755)) {
-            perror(src);
+// Helper to create directory from path (creates parent dirs as needed)
+static bool EnsureParentDir(const char *path) {
+    char dir[PATH_MAX];
+    strlcpy(dir, path, sizeof(dir));
+    char *slash = strrchr(dir, '/');
+    if (slash) {
+        *slash = '\0';
+        if (makedirs(dir, 0755)) {
+            perror(dir);
             return false;
         }
+    }
+    return true;
+}
+
+// Check file extension
+static bool IsCppFile(const char *name) {
+    size_t len = strlen(name);
+    return (len > 4 && strcmp(name + len - 4, ".cpp") == 0);
+}
+
+static bool IsObjCFile(const char *name) {
+    size_t len = strlen(name);
+    return (len > 2 && strcmp(name + len - 2, ".m") == 0);
+}
+
+static bool IsSourceFile(const char *name) {
+    return IsCppFile(name) || IsObjCFile(name);
+}
+
+// Compile a single source file to an object file
+static bool CompileSourceFile(const char *src, const char *obj, const char *basedir,
+                              bool is_cpp) {
+    // Build include paths for the various source locations
+    char incl_base[PATH_MAX], incl_ggml_include[PATH_MAX], incl_ggml_src[PATH_MAX];
+    char incl_metal[PATH_MAX];
+    snprintf(incl_base, sizeof(incl_base), "-I%s", basedir);
+    snprintf(incl_ggml_include, sizeof(incl_ggml_include), "-I%sllama.cpp/ggml/include", basedir);
+    snprintf(incl_ggml_src, sizeof(incl_ggml_src), "-I%sllama.cpp/ggml/src", basedir);
+    snprintf(incl_metal, sizeof(incl_metal), "-I%sllama.cpp/ggml/src/ggml-metal", basedir);
+
+    char *args[30];
+    int argc = 0;
+
+    args[argc++] = is_cpp ? "clang++" : "clang";
+    args[argc++] = incl_base;
+    args[argc++] = incl_ggml_include;
+    args[argc++] = incl_ggml_src;
+    args[argc++] = incl_metal;
+    args[argc++] = "-O3";
+    args[argc++] = "-fPIC";
+    args[argc++] = "-c";
+    if (is_cpp) {
+        args[argc++] = "-std=c++17";
+    }
+    args[argc++] = "-DNDEBUG";
+    args[argc++] = "-ffixed-x28";  // cosmo's tls register
+    args[argc++] = "-DTARGET_OS_OSX";
+    args[argc++] = "-DGGML_MULTIPLATFORM";
+    args[argc++] = (char *)src;
+    args[argc++] = "-o";
+    args[argc++] = (char *)obj;
+    args[argc] = NULL;
+
+    int pid, ws;
+    llamafile_log_command(args);
+    errno_t err = posix_spawnp(&pid, args[0], NULL, NULL, args, environ);
+    if (err) {
+        perror(args[0]);
+        return false;
+    }
+    while (waitpid(pid, &ws, 0) == -1) {
+        if (errno != EINTR) {
+            perror(args[0]);
+            return false;
+        }
+    }
+    return ws == 0;
+}
+
+static bool BuildMetal(const char *dso) {
+    char basedir[PATH_MAX];
+    llamafile_get_app_dir(basedir, PATH_MAX);
+
+    // Create base directory
+    if (makedirs(basedir, 0755)) {
+        perror(basedir);
+        return false;
+    }
+
+    // extract source code and track source files
+    char src[PATH_MAX];
+    char srcfiles[16][PATH_MAX];  // Array to hold source file paths
+    int nsrcfiles = 0;
+    bool needs_rebuild = false;
+
+    for (int i = 0; i < sizeof(srcs) / sizeof(*srcs); ++i) {
+        strlcpy(src, basedir, sizeof(src));
         strlcat(src, srcs[i].name, sizeof(src));
+
+        // Create parent directory for file
+        if (!EnsureParentDir(src)) {
+            return false;
+        }
+
         switch (llamafile_is_file_newer_than(srcs[i].zip, src)) {
         case -1:
             return false;
@@ -118,11 +233,16 @@ static bool BuildMetal(const char *dso) {
         default:
             __builtin_unreachable();
         }
+
+        // Track source files for compilation
+        if (IsSourceFile(srcs[i].name) && nsrcfiles < 16) {
+            strlcpy(srcfiles[nsrcfiles++], src, PATH_MAX);
+        }
     }
 
-    // determine if we need to build
-    if (!needs_rebuild) {
-        switch (llamafile_is_file_newer_than(src, dso)) {
+    // determine if we need to build (check last source file against dso)
+    if (!needs_rebuild && nsrcfiles > 0) {
+        switch (llamafile_is_file_newer_than(srcfiles[nsrcfiles - 1], dso)) {
         case -1:
             return false;
         case 0:
@@ -148,33 +268,54 @@ static bool BuildMetal(const char *dso) {
             perror(tmpdso);
             return false;
         }
-        char *args[] = {
-            "cc",
-            "-I.",
-            "-O3",
-            "-fPIC",
-            "-shared",
-            "-pthread",
-            "-DNDEBUG",
-            "-ffixed-x28", // cosmo's tls register
-            "-DTARGET_OS_OSX",
-            "-DGGML_MULTIPLATFORM",
-            src,
-            "-o",
-            tmpdso,
-            "-framework",
-            "Foundation",
-            "-framework",
-            "Metal",
-            "-framework",
-            "MetalKit",
-            NULL,
-        };
+
+        // Compile each source file to an object file
+        char objfiles[16][PATH_MAX];
+        int nobjfiles = 0;
+
+        for (int i = 0; i < nsrcfiles; ++i) {
+            // Generate object file path
+            snprintf(objfiles[nobjfiles], PATH_MAX, "%s.o", srcfiles[i]);
+
+            bool is_cpp = IsCppFile(srcfiles[i]);
+            if (!CompileSourceFile(srcfiles[i], objfiles[nobjfiles], basedir, is_cpp)) {
+                tinylog("failed to compile: ", srcfiles[i], "\n", NULL);
+                return false;
+            }
+            nobjfiles++;
+        }
+
+        // Link all object files into dylib
+        char *args[40];
+        int argc = 0;
+        args[argc++] = "clang++";
+        args[argc++] = "-shared";
+        args[argc++] = "-pthread";
+        args[argc++] = "-ffixed-x28";
+        // Allow undefined symbols - they'll be resolved at runtime from main binary
+        args[argc++] = "-undefined";
+        args[argc++] = "dynamic_lookup";
+
+        // Add all object files
+        for (int i = 0; i < nobjfiles; ++i) {
+            args[argc++] = objfiles[i];
+        }
+
+        args[argc++] = "-o";
+        args[argc++] = tmpdso;
+        args[argc++] = "-framework";
+        args[argc++] = "Foundation";
+        args[argc++] = "-framework";
+        args[argc++] = "Metal";
+        args[argc++] = "-framework";
+        args[argc++] = "MetalKit";
+        args[argc] = NULL;
+
         int pid, ws;
         llamafile_log_command(args);
-        errno_t err = posix_spawnp(&pid, "cc", NULL, NULL, args, environ);
+        errno_t err = posix_spawnp(&pid, "clang++", NULL, NULL, args, environ);
         if (err) {
-            perror("cc");
+            perror("clang++");
             if (err == ENOENT) {
                 tinylog("PLEASE RUN: xcode-select --install\n", NULL);
             }
@@ -182,17 +323,22 @@ static bool BuildMetal(const char *dso) {
         }
         while (waitpid(pid, &ws, 0) == -1) {
             if (errno != EINTR) {
-                perror("cc");
+                perror("clang++");
                 return false;
             }
         }
         if (ws) {
-            tinylog("compiler returned nonzero exit status\n", NULL);
+            tinylog("linker returned nonzero exit status\n", NULL);
             return false;
         }
         if (rename(tmpdso, dso)) {
             perror(dso);
             return false;
+        }
+
+        // Clean up object files
+        for (int i = 0; i < nobjfiles; ++i) {
+            unlink(objfiles[i]);
         }
     }
 
@@ -218,7 +364,7 @@ static bool LinkMetal(const char *dso) {
     ok &= !!(ggml_metal.backend_is_metal = cosmo_dlsym(lib, "ggml_backend_is_metal"));
     // ok &= !!(ggml_metal.backend_set_n_cb = cosmo_dlsym(lib, "ggml_backend_metal_set_n_cb"));  // Removed: API changed
     ok &= !!(ggml_metal.set_abort_callback = cosmo_dlsym(lib, "ggml_backend_metal_set_abort_callback"));  // Changed function name
-    ok &= !!(ggml_metal.reg_init = cosmo_dlsym(lib, "ggml_backend_reg_metal_init"));
+    ok &= !!(ggml_metal.reg = cosmo_dlsym(lib, "ggml_backend_metal_reg"));
     // ok &= !!(ggml_metal.get_device_properties = cosmo_dlsym(lib, "ggml_backend_metal_get_device_properties"));  // Removed: API changed
     // ok &= !!(ggml_metal.get_device_memory_usage = cosmo_dlsym(lib, "ggml_backend_metal_get_device_memory_usage"));  // Removed: API changed
     ok &= !!(ggml_metal.supports_family = cosmo_dlsym(lib, "ggml_backend_metal_supports_family"));
@@ -325,18 +471,23 @@ void ggml_backend_metal_set_abort_callback(ggml_backend_t backend, ggml_abort_ca
     return ggml_metal.set_abort_callback(backend, abort_callback, user_data);
 }
 
-ggml_backend_t ggml_backend_reg_metal_init(const char *params, void *user_data) {
+ggml_backend_reg_t ggml_backend_metal_reg(void) {
     if (!llamafile_has_metal())
         return 0;
-    return ggml_metal.reg_init(params, user_data);
+    return ggml_metal.reg();
 }
 
-// Removed: ggml_backend_metal_get_device_properties no longer exists
-// void ggml_backend_metal_get_device_properties(ggml_backend_t backend, struct ggml_metal_device_properties *properties) {
-//     if (!llamafile_has_metal())
-//         return;
-//     return ggml_metal.get_device_properties(backend, properties);
-// }
+// [llamafile] Stub implementation - metal properties are collected differently in macOS
+void ggml_backend_metal_get_device_properties(ggml_backend_t backend, struct ggml_metal_device_properties *properties) {
+    if (!properties)
+        return;
+    memset(properties, 0, sizeof(*properties));
+    if (!llamafile_has_metal())
+        return;
+    // Properties are typically filled in by system_profiler on macOS
+    // This is a stub that localscore will populate via other means
+    strncpy(properties->name, "Apple Metal", sizeof(properties->name) - 1);
+}
 
 // Removed: ggml_backend_metal_get_device_memory_usage no longer exists
 // void ggml_backend_metal_get_device_memory_usage(ggml_backend_t backend, float *used, float *total) {

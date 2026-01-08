@@ -24,10 +24,15 @@
 #include "llamafile/color.h"
 #include "llamafile/llama.h"
 #include "llamafile/macros.h"
-#include "llamafile/string.h"
+#include "llamafile/strlib.h"
 
 namespace lf {
 namespace chatbot {
+
+// Helper to get vocab from the global model
+static inline const llama_vocab *vocab() {
+    return llama_model_get_vocab(g_model);
+}
 
 bool g_manual_mode;
 enum Role g_role = ROLE_USER;
@@ -93,21 +98,21 @@ int tokens_used(void) {
 }
 
 std::string describe_token(llama_token token) {
-    if (token == llama_token_bos(g_model))
+    if (token == llama_token_bos(vocab()))
         return "§";
-    if (token == llama_token_eos(g_model))
+    if (token == llama_token_eos(vocab()))
         return "∎";
-    if (token == llama_token_cls(g_model))
+    if (token == llama_token_cls(vocab()))
         return "⌘";
-    if (token == llama_token_sep(g_model))
+    if (token == llama_token_sep(vocab()))
         return "⋯";
-    if (token == llama_token_pad(g_model))
+    if (token == llama_token_pad(vocab()))
         return "␣";
-    if (token == llama_token_nl(g_model))
+    if (token == llama_token_nl(vocab()))
         return "↵";
-    if (llama_token_is_eog(g_model, token))
+    if (llama_token_is_eog(vocab(), token))
         return "⌟";
-    if (llama_token_is_control(g_model, token))
+    if (llama_token_is_control(vocab(), token))
         return "∷";
     std::string s = token_to_piece(g_ctx, token, DONT_RENDER_SPECIAL_TOKENS);
     if (s.empty())
@@ -204,8 +209,9 @@ void on_forget(const std::vector<std::string> &args) {
         return;
     }
     printf(FAINT "forgetting: %s" RESET "\n", describe_erasure(erase_begin, erase_end).c_str());
-    llama_kv_cache_seq_rm(g_ctx, 0, erase_begin, erase_end);
-    llama_kv_cache_seq_add(g_ctx, 0, erase_end, -1, -erase_count);
+    llama_memory_t mem = llama_get_memory(g_ctx);
+    llama_memory_seq_rm(mem, 0, erase_begin, erase_end);
+    llama_memory_seq_add(mem, 0, erase_end, -1, -erase_count);
     g_history.erase(g_history.begin() + erase_begin, //
                     g_history.begin() + erase_end);
     adjust_stacks(erase_begin, erase_end);
@@ -214,7 +220,7 @@ void on_forget(const std::vector<std::string> &args) {
 
 void rewind(int pos) {
     unassert(pos <= tokens_used());
-    llama_kv_cache_seq_rm(g_ctx, 0, pos, -1);
+    llama_memory_seq_rm(llama_get_memory(g_ctx), 0, pos, -1);
     g_history.resize(pos);
 }
 

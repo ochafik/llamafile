@@ -4,6 +4,7 @@
 #include "llama.cpp/cores.h"
 #include "system.h"
 #include <cosmo.h>
+#include "llamafile/llamafile.h"
 
 static const cmd_params cmd_params_defaults = {
     /* model         */ "", // [jart] no default guessing
@@ -61,7 +62,7 @@ llama_context_params cmd_params::to_llama_cparams() const {
     cparams.type_k = type_k;
     cparams.type_v = type_v;
     cparams.offload_kqv = !no_kv_offload;
-    cparams.flash_attn = flash_attn;
+    cparams.flash_attn_type = flash_attn ? LLAMA_FLASH_ATTN_TYPE_ENABLED : LLAMA_FLASH_ATTN_TYPE_DISABLED;
     cparams.embeddings = embeddings;
 
     return cparams;

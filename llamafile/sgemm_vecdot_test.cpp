@@ -17,7 +17,7 @@
 
 #include "ansiblas.h"
 #include "bench.h"
-#include "float.h"
+#include "fp16_compat.h"
 #include "llama.cpp/ggml/include/ggml.h"
 #include "macros.h"
 #include "numba.h"

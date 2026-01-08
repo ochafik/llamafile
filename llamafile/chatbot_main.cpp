@@ -23,14 +23,19 @@
 #include <string>
 #include <vector>
 
-#include "llama.cpp/common.h"
+#include "llama.cpp/common/arg.h"
+#include "llama.cpp/common/common.h"
+#include "llama.cpp/common/log.h"
 #include "llama.cpp/ggml/include/ggml-cuda.h"
 #include "llama.cpp/tools/mtmd/clip.h"
+#include "llama.cpp/tools/mtmd/mtmd.h"
 #include "llama.cpp/tools/server/server.h"
 #include "llamafile/color.h"
 #include "llamafile/compute.h"
 #include "llamafile/llama.h"
-#include "llamafile/string.h"
+#include "llamafile/llamafile.h"
+#include "llamafile/strlib.h"
+#include "llamafile/version.h"
 
 namespace lf {
 namespace chatbot {
@@ -40,7 +45,7 @@ struct ServerArgs {
     char **argv;
 };
 
-gpt_params g_params;
+common_params g_params;
 clip_ctx *g_clip;
 llama_model *g_model;
 llama_context *g_ctx;
@@ -49,7 +54,7 @@ pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 std::string g_listen_url;
 
 std::string describe_compute(void) {
-    if (llama_n_gpu_layers(g_model) > 0 && llamafile_has_gpu()) {
+    if (g_params.n_gpu_layers > 0 && llamafile_has_gpu()) {
         if (llamafile_has_metal()) {
             return "Apple Metal GPU";
         } else {
@@ -118,13 +123,13 @@ int main(int argc, char **argv) {
 
     // override defaults for some flags
     g_params.n_batch = 256; // for better progress indication
-    g_params.sparams.temp = 0; // don't believe in randomness by default
+    g_params.sampling.temp = 0; // don't believe in randomness by default
     g_params.prompt = DEFAULT_SYSTEM_PROMPT;
 
     // parse flags (sadly initializes gpu support as side-effect)
     print_ephemeral("loading backend...");
     llama_backend_init();
-    if (!gpt_params_parse(argc, argv, g_params)) { // also loads gpu module
+    if (!common_params_parse(argc, argv, g_params, LLAMA_EXAMPLE_CLI)) { // also loads gpu module
         fprintf(stderr, "error: failed to parse flags\n");
         exit(1);
     }
@@ -133,18 +138,18 @@ int main(int argc, char **argv) {
     // setup logging
     FLAG_log_disable = false;
     if (!g_params.verbosity)
-        log_disable();
+        common_log_set_verbosity_thold(-1);
 
     print_ephemeral("loading model...");
-    llama_model_params model_params = llama_model_params_from_gpt_params(g_params);
-    g_model = llama_load_model_from_file(g_params.model.c_str(), model_params);
+    llama_model_params model_params = common_model_params_to_llama(g_params);
+    g_model = llama_model_load_from_file(g_params.model.path.c_str(), model_params);
     clear_ephemeral();
     if (g_model == NULL) {
-        fprintf(stderr, "%s: failed to load model%s\n", g_params.model.c_str(), tip());
+        fprintf(stderr, "%s: failed to load model%s\n", g_params.model.path.c_str(), tip());
         exit(2);
     }
-    if (g_params.n_ctx <= 0 || g_params.n_ctx > llama_n_ctx_train(g_model))
-        g_params.n_ctx = llama_n_ctx_train(g_model);
+    if (g_params.n_ctx <= 0 || g_params.n_ctx > llama_model_n_ctx_train(g_model))
+        g_params.n_ctx = llama_model_n_ctx_train(g_model);
     if (g_params.n_ctx < g_params.n_batch)
         g_params.n_batch = g_params.n_ctx;
 
@@ -167,7 +172,7 @@ int main(int argc, char **argv) {
     if (!FLAG_nologo) {
         printf(BOLD "software" UNBOLD ": llamafile " LLAMAFILE_VERSION_STRING "\n" //
                BOLD "model" UNBOLD ":    %s\n",
-               basename(g_params.model).c_str());
+               lf::basename(g_params.model.path).c_str());
         if (is_base_model())
             printf(BOLD "mode" UNBOLD ":     RAW TEXT COMPLETION (base model)\n");
         printf(BOLD "compute" UNBOLD ":  %s\n", describe_compute().c_str());
@@ -177,8 +182,8 @@ int main(int argc, char **argv) {
     }
 
     print_ephemeral("initializing context...");
-    llama_context_params ctx_params = llama_context_params_from_gpt_params(g_params);
-    g_ctx = llama_new_context_with_model(g_model, ctx_params);
+    llama_context_params ctx_params = common_context_params_to_llama(g_params);
+    g_ctx = llama_init_from_model(g_model, ctx_params);
     clear_ephemeral();
     if (!g_ctx) {
         fprintf(stderr, "error: failed to initialize context%s\n", tip());
@@ -190,7 +195,10 @@ int main(int argc, char **argv) {
 
     if (FLAG_mmproj) {
         print_ephemeral("initializing vision model...");
-        g_clip = clip_model_load(FLAG_mmproj, g_params.verbosity);
+        clip_context_params clip_params = {};
+        clip_params.use_gpu = g_params.n_gpu_layers > 0;
+        clip_init_result clip_result = clip_init(FLAG_mmproj, clip_params);
+        g_clip = clip_result.ctx_v;
         clear_ephemeral();
         if (!g_clip) {
             fprintf(stderr, "%s: failed to initialize clip image model%s\n", FLAG_mmproj, tip());
@@ -211,7 +219,7 @@ int main(int argc, char **argv) {
     clear_ephemeral();
 
     print_ephemeral("freeing model...");
-    llama_free_model(g_model);
+    llama_model_free(g_model);
     clear_ephemeral();
 
     print_ephemeral("freeing backend...");

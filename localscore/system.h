@@ -1,7 +1,7 @@
 #pragma once
 
 #include <string>
-#include "llama.cpp/llama.h"
+#include "llama.cpp/include/llama.h"
 
 #define MAX_STRING_LENGTH 256
 

@@ -18,6 +18,8 @@
 #include "debug.h"
 #include "log.h"
 
+#include "llama.cpp/ggml/src/ggml-impl.h"
+
 #include <atomic>
 #include <cosmo.h>
 #include <fenv.h>

@@ -3,7 +3,9 @@
 #include "printer.h"
 #include "utils.h"
 
-#include "llama.cpp/string.h"
+#include "llama.cpp/common/common.h"
+#include "llama.cpp/src/llama-impl.h"
+#include "llamafile/llamafile.h"
 
 FileWriter::FileWriter(FILE* f): fout(f) {}
 
@@ -385,7 +387,9 @@ void console_printer::print_test(const test & t) {
 
             value = buf;
         } else if (vmap.find(field) != vmap.end()) {
-            value = replace_all(replace_all(vmap.at(field), ".gguf", ""), ".llamafile", ""); // [jart]
+            value = vmap.at(field);
+            replace_all(value, ".gguf", "");
+            replace_all(value, ".llamafile", ""); // [jart]
         } else {
             assert(false);
             exit(1);

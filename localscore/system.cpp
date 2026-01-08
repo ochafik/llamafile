@@ -6,14 +6,18 @@
 #include <iostream>
 #include <string>
 #include <sstream>
-#include "llama.cpp/string.h"
+#include "llama.cpp/common/common.h"
 
 #include "cmd.h"
 #include "utils.h"
 
-#include "llama.cpp/ggml-metal.h"
-#include "llama.cpp/ggml-cuda.h"
-#include "llama.cpp/common.h"
+#include "llama.cpp/ggml/include/ggml-metal.h"
+#include "llama.cpp/ggml/include/ggml-cuda.h"
+#include "llama.cpp/common/common.h"
+#include "llamafile/llamafile.h"
+#include "llamafile/flags.h"
+#include "llamafile/strlib.h"
+#include "llamafile/version.h"
 
 #include <libc/intrin/x86.h>
 
@@ -123,9 +127,9 @@ std::string get_cpu_info() { // [jart]
 
     }
 #endif
-    id = replace_all(id, " 96-Cores", "");
-    id = replace_all(id, "(TM)", "");
-    id = replace_all(id, "(R)", "");
+    string_replace_all(id, " 96-Cores", "");
+    string_replace_all(id, "(TM)", "");
+    string_replace_all(id, "(R)", "");
 
     std::string march;
 #ifdef __x86_64__
@@ -334,8 +338,15 @@ void get_model_info(ModelInfo *info, llama_model *model) {
         exit(1);
     }
 
-    llama_model_quant_str(model, buf, sizeof(buf));
-    strncpy(info->quant, buf, sizeof(buf));
+    // Extract quant type from model description (last space-separated token)
+    // llama_model_desc returns e.g. "llama 7B Q4_K_M"
+    std::string desc(info->type);
+    size_t last_space = desc.rfind(' ');
+    if (last_space != std::string::npos) {
+        strncpy(info->quant, desc.c_str() + last_space + 1, MAX_STRING_LENGTH - 1);
+    } else {
+        strncpy(info->quant, desc.c_str(), MAX_STRING_LENGTH - 1);
+    }
     llama_model_meta_val_str(model, "general.size_label", buf, sizeof(buf));
     strncpy(info->size_label, buf, sizeof(buf));
     info->size = llama_model_size(model);
