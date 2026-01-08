@@ -17,7 +17,7 @@
 #pragma once
 
 #include "cuda.h"
-#include "float.h"
+#include "llamafile/float.h"
 #include "gemm.h"
 #include "half.h"
 #include "macros.h"
