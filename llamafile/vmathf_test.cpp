@@ -15,7 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "fp16_compat.h"
+#include "float.h"
 #include "numba.h"
 
 #include <assert.h>
