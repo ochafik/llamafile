@@ -83,9 +83,15 @@ static const struct Source {
     {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal.m", "llama.cpp/ggml/src/ggml-metal/ggml-metal.m"},
 };
 
+// Forward declarations for Metal dynamic loading API
+struct ggml_backend_api;
+void ggml_metal_link(const struct ggml_backend_api *);
+const struct ggml_backend_api *ggml_backend_api(void);
+
 static struct Metal {
     bool supported;
     atomic_uint once;
+    typeof(ggml_metal_link) *ggml_metal_link;  // Must be called before other functions
     typeof(ggml_backend_metal_init) *backend_init;
     typeof(ggml_backend_is_metal) *backend_is_metal;
     typeof(ggml_backend_metal_set_abort_callback) *set_abort_callback;
@@ -350,6 +356,7 @@ static bool LinkMetal(const char *dso) {
 
     // import functions
     bool ok = true;
+    ok &= !!(ggml_metal.ggml_metal_link = cosmo_dlsym(lib, "ggml_metal_link"));
     ok &= !!(ggml_metal.backend_init = cosmo_dlsym(lib, "ggml_backend_metal_init"));
     ok &= !!(ggml_metal.backend_is_metal = cosmo_dlsym(lib, "ggml_backend_is_metal"));
     ok &= !!(ggml_metal.set_abort_callback = cosmo_dlsym(lib, "ggml_backend_metal_set_abort_callback"));
@@ -360,19 +367,19 @@ static bool LinkMetal(const char *dso) {
         return false;
     }
 
-    // TODO: Metal backend registration is disabled due to NULL function pointer issues
-    // when static structs are accessed from the main program after cosmo_dlopen.
-    // The device and buffer type iface function pointers (buffer_from_host_ptr,
-    // alloc_buffer, etc.) are NULL when accessed, even though they are initialized
-    // in static structs like ggml_backend_metal_device_i.
-    // This appears to be a cosmopolitan libc issue with static initialization in dylibs.
-    //
-    // ggml_backend_reg_t reg = ggml_metal.reg();
-    // if (reg) {
-    //     ggml_backend_register(reg);
-    // } else {
-    //     tinylog("warning: failed to get Metal backend registration\n", NULL);
-    // }
+    // Initialize the Metal backend with function pointers from the main binary.
+    // This is necessary because cosmo_dlopen doesn't properly handle static struct
+    // initializers with function pointers - they end up NULL when accessed from
+    // the main program. By passing the backend API, the dylib can set up trampolines.
+    ggml_metal.ggml_metal_link(ggml_backend_api());
+
+    // Register the Metal backend with the global registry
+    ggml_backend_reg_t reg = ggml_metal.reg();
+    if (reg) {
+        ggml_backend_register(reg);
+    } else {
+        tinylog("warning: failed to get Metal backend registration\n", NULL);
+    }
 
     return true;
 }
