@@ -16,6 +16,7 @@
 // limitations under the License.
 
 #include "llama.cpp/ggml/include/ggml-metal.h"
+#include "llama.cpp/ggml/src/ggml-backend-impl.h"
 #include "llamafile.h"
 #include "log.h"
 #include <assert.h>
@@ -164,6 +165,7 @@ static bool CompileSourceFile(const char *src, const char *obj, const char *base
     args[argc++] = "-ffixed-x28";  // cosmo's tls register
     args[argc++] = "-DTARGET_OS_OSX";
     args[argc++] = "-DGGML_MULTIPLATFORM";
+    args[argc++] = "-DGGML_BACKEND_DL";  // Enable dynamic loading interface (exports ggml_backend_init)
     args[argc++] = (char *)src;
     args[argc++] = "-o";
     args[argc++] = (char *)obj;
@@ -348,23 +350,30 @@ static bool LinkMetal(const char *dso) {
 
     // import functions
     bool ok = true;
-    // ok &= !!(ggml_metal.ggml_metal_link = cosmo_dlsym(lib, "ggml_metal_link"));  // Removed: API changed
     ok &= !!(ggml_metal.backend_init = cosmo_dlsym(lib, "ggml_backend_metal_init"));
-    // ok &= !!(ggml_metal.backend_buffer_type = cosmo_dlsym(lib, "ggml_backend_metal_buffer_type"));  // Removed: API changed
-    // ok &= !!(ggml_metal.backend_buffer_from_ptr = cosmo_dlsym(lib, "ggml_backend_metal_buffer_from_ptr"));  // Removed: API changed
     ok &= !!(ggml_metal.backend_is_metal = cosmo_dlsym(lib, "ggml_backend_is_metal"));
-    // ok &= !!(ggml_metal.backend_set_n_cb = cosmo_dlsym(lib, "ggml_backend_metal_set_n_cb"));  // Removed: API changed
-    ok &= !!(ggml_metal.set_abort_callback = cosmo_dlsym(lib, "ggml_backend_metal_set_abort_callback"));  // Changed function name
+    ok &= !!(ggml_metal.set_abort_callback = cosmo_dlsym(lib, "ggml_backend_metal_set_abort_callback"));
     ok &= !!(ggml_metal.reg = cosmo_dlsym(lib, "ggml_backend_metal_reg"));
-    // ok &= !!(ggml_metal.get_device_properties = cosmo_dlsym(lib, "ggml_backend_metal_get_device_properties"));  // Removed: API changed
-    // ok &= !!(ggml_metal.get_device_memory_usage = cosmo_dlsym(lib, "ggml_backend_metal_get_device_memory_usage"));  // Removed: API changed
     ok &= !!(ggml_metal.supports_family = cosmo_dlsym(lib, "ggml_backend_metal_supports_family"));
     if (!ok) {
         tinylog(Dlerror(), ": not all symbols could be imported\n", NULL);
         return false;
     }
 
-    // we're good - no more ggml_backend_api() call needed
+    // TODO: Metal backend registration is disabled due to NULL function pointer issues
+    // when static structs are accessed from the main program after cosmo_dlopen.
+    // The device and buffer type iface function pointers (buffer_from_host_ptr,
+    // alloc_buffer, etc.) are NULL when accessed, even though they are initialized
+    // in static structs like ggml_backend_metal_device_i.
+    // This appears to be a cosmopolitan libc issue with static initialization in dylibs.
+    //
+    // ggml_backend_reg_t reg = ggml_metal.reg();
+    // if (reg) {
+    //     ggml_backend_register(reg);
+    // } else {
+    //     tinylog("warning: failed to get Metal backend registration\n", NULL);
+    // }
+
     return true;
 }
 
