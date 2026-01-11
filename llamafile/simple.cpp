@@ -88,7 +88,7 @@ int main(int argc, char **argv) {
 
     // Main generation loop
     for (;;) {
-        llama_token id = common_sampler_sample(smpl, ctx, 0);
+        llama_token id = common_sampler_sample(smpl, ctx, -1);
         if (llama_vocab_is_eog(vocab, id))
             break;
 

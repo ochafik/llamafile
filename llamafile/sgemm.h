@@ -1,5 +1,6 @@
 #pragma once
 #include <stdbool.h>
+#include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -20,8 +21,14 @@ bool iqk_mul_mat_moe_arm82(long, long, long, int, int, const void *, const void 
 bool iqk_mul_mat_moe_unsupported(long, long, long, int, int, const void *, const void *, float *,
                                  long, long, const void *, int, int);
 
-bool llamafile_sgemm(long, long, long, const void *, long, const void *, long, void *, long, int,
-                     int, int, int, int);
+// New API signature matching llama.cpp - params contains ith/nth thread info
+bool llamafile_sgemm(const struct ggml_compute_params *, int64_t, int64_t, int64_t,
+                     const void *, int64_t, const void *, int64_t, void *, int64_t,
+                     int, int, int);
+
+// Internal API with explicit ith/nth for architecture-specific implementations
+bool llamafile_sgemm_impl(long, long, long, const void *, long, const void *, long, void *, long, int,
+                          int, int, int, int);
 bool llamafile_mixmul(const struct ggml_compute_params *, const struct ggml_tensor *,
                       const struct ggml_tensor *, const struct ggml_tensor *, struct ggml_tensor *);
 size_t llamafile_mixmul_needs(const struct ggml_tensor *, const struct ggml_tensor *,

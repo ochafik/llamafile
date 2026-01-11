@@ -17,14 +17,20 @@
 
 #include "sgemm.h"
 #include "llamafile.h"
+#include "llama.cpp/ggml/src/ggml-cpu/ggml-cpu-impl.h"
 #include <cassert>
+#include <cstdint>
 #include <cosmo.h>
 #include <cpuid.h>
 #include <libc/sysv/consts/hwcap.h>
 #include <sys/auxv.h>
 
+// Internal sgemm function type with explicit ith/nth parameters
+typedef bool (*sgemm_impl_fn)(long, long, long, const void *, long, const void *, long, void *, long,
+                               int, int, int, int, int);
+
 static const struct GemmFuncs {
-    typeof(llamafile_sgemm) *sgemm;
+    sgemm_impl_fn sgemm;
     typeof(llamafile_mixmul) *mixmul;
     typeof(llamafile_mixmul_iqk) *iqk_mixmul = iqk_mul_mat_moe_unsupported;
     GemmFuncs() {
@@ -109,6 +115,7 @@ static const struct GemmFuncs {
  * only performed when a handwritten kernel is written and available.
  * Otherwise the caller should fall back to a general matmul routine.
  *
+ * @param params contains thread info (ith = thread id, nth = thread count)
  * @param m is rows in `A` and `C`
  * @param n is cols in `B` and `C`
  * @param k is cols in `A` and rows in `B`
@@ -118,15 +125,25 @@ static const struct GemmFuncs {
  * @param ldb is row stride of `B`
  * @param C is input/output array of output matrices
  * @param ldc is row stride of `C`
- * @param ith is thread id (must be less than `nth`)
- * @param nth is number of threads (must be greater than zero)
  * @param Atype is GGML data type of `A`
  * @param Btype is GGML data type of `B`
  * @param Ctype is GGML data type of `C`
  * @return true if this function was able to service the matmul request
  */
-bool llamafile_sgemm(long m, long n, long k, const void *A, long lda, const void *B, long ldb,
-                     void *C, long ldc, int ith, int nth, int Atype, int Btype, int Ctype) {
+bool llamafile_sgemm(const struct ggml_compute_params *params,
+                     int64_t m, int64_t n, int64_t k,
+                     const void *A, int64_t lda, const void *B, int64_t ldb,
+                     void *C, int64_t ldc, int Atype, int Btype, int Ctype) {
+    return funcs.sgemm(m, n, k, A, lda, B, ldb, C, ldc,
+                       params->ith, params->nth, Atype, Btype, Ctype);
+}
+
+/**
+ * Internal implementation with explicit thread parameters.
+ * Used by the architecture-specific implementations.
+ */
+bool llamafile_sgemm_impl(long m, long n, long k, const void *A, long lda, const void *B, long ldb,
+                          void *C, long ldc, int ith, int nth, int Atype, int Btype, int Ctype) {
     return funcs.sgemm(m, n, k, A, lda, B, ldb, C, ldc, ith, nth, Atype, Btype, Ctype);
 }
 
