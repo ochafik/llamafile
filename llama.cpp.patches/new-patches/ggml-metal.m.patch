@@ -1,0 +1,94 @@
+--- a/ggml/src/ggml-metal/ggml-metal.m
++++ b/ggml/src/ggml-metal/ggml-metal.m
+@@ -1,3 +1,5 @@
++// -*- mode:objc;indent-tabs-mode:nil;c-basic-offset:4;coding:utf-8 -*-
++// vi: set et ft=objc ts=4 sts=4 sw=4 fenc=utf-8 :vi
+ #import "ggml-metal.h"
+
+ #import "ggml-impl.h"
+@@ -8,6 +10,83 @@
+
+ #import <Metal/Metal.h>
+
++// [jart] Backend API trampolines for dynamic loading with cosmo_dlopen
++// Static struct initializers don't work correctly with cosmopolitan's dlopen,
++// so we redirect function calls through a passed-in API struct.
++static const struct ggml_backend_api *g_backend;
++
++#define FLAG_log_disable (*g_backend->FLAG_log_disable)
++#define ggml_backend_buffer_init g_backend->ggml_backend_buffer_init
++#define ggml_backend_buffer_is_host g_backend->ggml_backend_buffer_is_host
++#define ggml_blck_size g_backend->ggml_blck_size
++#define ggml_element_size g_backend->ggml_element_size
++#define ggml_get_unary_op g_backend->ggml_get_unary_op
++#define ggml_graph_node g_backend->ggml_graph_node
++#define ggml_guid_matches g_backend->ggml_guid_matches
++#define ggml_is_contiguous g_backend->ggml_is_contiguous
++#define ggml_is_contiguous_1 g_backend->ggml_is_contiguous_1
++#define ggml_is_empty g_backend->ggml_is_empty
++#define ggml_is_quantized g_backend->ggml_is_quantized
++#define ggml_is_transposed g_backend->ggml_is_transposed
++#define ggml_nbytes g_backend->ggml_nbytes
++#define ggml_nelements g_backend->ggml_nelements
++#define ggml_nrows g_backend->ggml_nrows
++#define ggml_op_desc g_backend->ggml_op_desc
++#define ggml_op_name g_backend->ggml_op_name
++#define ggml_type_name g_backend->ggml_type_name
++#define ggml_type_size g_backend->ggml_type_size
++#define ggml_are_same_shape g_backend->ggml_are_same_shape
++#define ggml_backend_reg_dev_get g_backend->ggml_backend_reg_dev_get
++
++void ggml_metal_link(const struct ggml_backend_api *backend_api) {
++    g_backend = backend_api;
++}
++
++GGML_NORETURN
++static void exit_(int rc) {
++    g_backend->exit(rc);
++#define exit exit_
++#if defined(__GNUC__) || defined(__llvm__)
++    __builtin_unreachable();
++#elif defined(_MSC_VER)
++    __assume(0);
++#endif
++    for (;;);
++}
++
++// printf() and fprintf() runtime bridge
++// this is needed so text gets printed on windows
++// it also helps ensure the atomicity of log lines
++#define GGML_METAL_PRINT_BUFSIZ 512
++static void ggml_metal_print(const char *fmt, ...) {
++#define fflush(_) (void)0
++#define printf(...) ggml_metal_print(__VA_ARGS__)
++#define fprintf(_, ...) ggml_metal_print(__VA_ARGS__)
++    if (FLAG_log_disable) return;
++    int len;
++    va_list va;
++    char buf[GGML_METAL_PRINT_BUFSIZ];
++    va_start(va, fmt);
++    len = vsnprintf(buf, GGML_METAL_PRINT_BUFSIZ, fmt, va);
++    va_end(va);
++    if (len < 0)
++        len = strnlen(buf, GGML_METAL_PRINT_BUFSIZ);
++    if (len >= GGML_METAL_PRINT_BUFSIZ) {
++        len = GGML_METAL_PRINT_BUFSIZ;
++        buf[len - 4] = '.';
++        buf[len - 3] = '.';
++        buf[len - 2] = '.';
++        buf[len - 1] = '\n';
++    }
++    g_backend->write(2, buf, len);
++}
++
++GGML_NORETURN
++void ggml_abort(const char * file, int line, const char * fmt, ...) {
++    char buf[GGML_METAL_PRINT_BUFSIZ];
++    snprintf(buf, sizeof(buf), "GGML_ABORT at %s:%d: %s\n", file, line, fmt);
++    g_backend->write(2, buf, strlen(buf));
++    exit_(1);
++}
++
+ #undef MIN
+ #undef MAX
+ #define MIN(a, b) ((a) < (b) ? (a) : (b))

@@ -1,0 +1,89 @@
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -1,4 +1,6 @@
+ // Note: porting this file to C++ is a work in progress
++// -*- mode:c++;indent-tabs-mode:nil;c-basic-offset:4;coding:utf-8 -*-
++// vi: set et ft=cpp ts=4 sts=4 sw=4 fenc=utf-8 :vi
+
+ #ifdef _WIN32
+ #define WIN32_LEAN_AND_MEAN
+@@ -23,6 +25,11 @@
+ #include <vector>
+ #include <algorithm>
+
++#ifdef __COSMOPOLITAN__
++#include <cosmo.h>
++#include "llamafile/log.h"
++#endif
++
+ #ifdef __APPLE__
+ #include <sys/types.h>
+ #include <sys/sysctl.h>
+@@ -640,3 +647,55 @@ ggml_backend_buffer_t ggml_backend_cpu_buffer_from_ptr(void * ptr, size_t size)
+     GGML_ASSERT((uintptr_t)ptr % TENSOR_ALIGNMENT == 0 && "buffer pointer must be aligned");
+     return ggml_backend_buffer_init(ggml_backend_cpu_buffer_from_ptr_type(), ggml_backend_cpu_buffer_from_ptr_i, ptr, size);
+ }
++
++// [jart] Backend API for dynamic loading with cosmopolitan
++#ifdef __COSMOPOLITAN__
++
++static void system_exit(int rc) {
++    pthread_exit(0);
++}
++
++static void system_free(void *p) {
++    free(p);
++}
++
++static void *system_malloc(size_t n) {
++    return malloc(n);
++}
++
++static char *system_getenv(const char *s) {
++    if (IsWindows())
++        return 0;
++    return getenv(s);
++}
++
++static long system_write(int fd, const void *p, long n) {
++    if (IsWindows())
++        return 0;
++    return write(fd, p, n);
++}
++
++static const struct ggml_backend_api kGgmlBackendApi = {
++    &FLAG_log_disable,
++    system_exit,
++    system_free,
++    system_malloc,
++    system_getenv,
++    system_write,
++    ggml_backend_register,
++    ggml_backend_buffer_init,
++    ggml_backend_buffer_is_host,
++    ggml_backend_reg_dev_get,
++    ggml_is_quantized,
++    ggml_type_size,
++    ggml_blck_size,
++    ggml_is_transposed,
++    ggml_nbytes,
++    ggml_get_unary_op,
++    ggml_nelements,
++    ggml_nrows,
++    ggml_is_contiguous,
++    ggml_is_contiguous_1,
++    ggml_op_name,
++    ggml_type_name,
++    ggml_element_size,
++    ggml_op_desc,
++    ggml_guid_matches,
++    ggml_is_empty,
++    ggml_are_same_shape,
++    ggml_graph_node,
++};
++
++extern "C" const struct ggml_backend_api *ggml_backend_api(void) {
++    return &kGgmlBackendApi;
++}
++
++#endif // __COSMOPOLITAN__
