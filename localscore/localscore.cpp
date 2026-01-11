@@ -142,7 +142,7 @@ static void warmup_run(llama_model *model, llama_context *ctx, cmd_params inst) 
     const int32_t n_vocab = llama_vocab_n_tokens(vocab);
     std::vector<llama_token> tokens(n_batch);
 
-    llama_memory_clear(llama_get_memory(ctx), false);
+    llama_kv_self_clear(ctx);
 
     // warmup prompt
     while (n_processed < n_prompt) {

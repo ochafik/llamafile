@@ -1,6 +1,6 @@
 #pragma once
 
-#include "llama.cpp/vendor/nlohmann/json_fwd.hpp"
+#include "llama.cpp/common/json.hpp"
 
 #include <memory>
 #include <unordered_map>

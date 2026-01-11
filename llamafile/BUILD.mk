@@ -3,9 +3,9 @@
 
 PKGS += LLAMAFILE
 
-# Get all files first, then filter out chatbot_main (depends on disabled llama.cpp/tools/*)
+# Get all files first, then filter out chatbot_* (depends on disabled llama.cpp/tools/*)
 LLAMAFILE_FILES_ALL := $(wildcard llamafile/*.*)
-LLAMAFILE_FILES := $(filter-out llamafile/chatbot_main.cpp llamafile/chatbot_main.h,$(LLAMAFILE_FILES_ALL))
+LLAMAFILE_FILES := $(filter-out $(wildcard llamafile/chatbot*.cpp llamafile/chatbot*.h),$(LLAMAFILE_FILES_ALL))
 LLAMAFILE_HDRS = $(filter %.h,$(LLAMAFILE_FILES))
 LLAMAFILE_INCS = $(filter %.inc,$(LLAMAFILE_FILES))
 LLAMAFILE_SRCS_C = $(filter %.c,$(LLAMAFILE_FILES))

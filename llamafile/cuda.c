@@ -19,6 +19,7 @@
 #include "llama.cpp/ggml/include/ggml-cuda.h"
 #include "llama.cpp/ggml/include/ggml-metal.h"
 #include "llamafile/llamafile.h"
+
 #include "llamafile/log.h"
 #include "llamafile/x.h"
 #include <assert.h>
@@ -38,17 +39,27 @@
 #include <time.h>
 #include <unistd.h>
 
-__static_yoink("llama.cpp/ggml.h");
+// [llamafile] Define struct removed from upstream llama.cpp
+struct ggml_cuda_device_properties {
+    char name[256];
+    size_t totalGlobalMem;
+    int multiProcessorCount;
+    int major;
+    int minor;
+    char compute[8];
+};
+
+__static_yoink("llama.cpp/ggml/include/ggml.h");
 __static_yoink("llamafile/compcap.cu");
 __static_yoink("llamafile/tinyblas.h");
 __static_yoink("llamafile/tinyblas.cu");
 __static_yoink("llama.cpp/ggml-impl.h");
 __static_yoink("llamafile/llamafile.h");
 __static_yoink("llama.cpp/ggml/include/ggml-cuda.h");
-__static_yoink("llama.cpp/ggml-alloc.h");
+__static_yoink("llama.cpp/ggml/include/ggml-alloc.h");
 __static_yoink("llama.cpp/ggml-cuda.cu");
 __static_yoink("llama.cpp/ggml-common.h");
-__static_yoink("llama.cpp/ggml-backend.h");
+__static_yoink("llama.cpp/ggml/include/ggml-backend.h");
 __static_yoink("llama.cpp/ggml-backend-impl.h");
 
 // yoink the fastest zlib deflate impl from cosmo libc

@@ -32,6 +32,16 @@
 #include <time.h>
 #include <unistd.h>
 
+// [llamafile] Define struct removed from upstream llama.cpp
+struct ggml_metal_device_properties {
+    char name[256];
+    float memory;
+    int core_count;
+    int metal_version;
+    int gpu_family;
+    int gpu_family_common;
+};
+
 // Core headers from native llama.cpp structure
 __static_yoink("llama.cpp/ggml/include/ggml.h");
 __static_yoink("llama.cpp/ggml/include/ggml-alloc.h");
@@ -43,18 +53,9 @@ __static_yoink("llama.cpp/ggml/src/ggml-backend-impl.h");
 __static_yoink("llama.cpp/ggml/src/ggml-common.h");
 __static_yoink("llama.cpp/ggml/src/ggml-quants.h");
 __static_yoink("llamafile/llamafile.h");
-// Metal-specific sources
-__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal.cpp");
-__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-common.cpp");
-__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-common.h");
-__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-context.h");
-__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-context.m");
-__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-device.cpp");
-__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-device.h");
-__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-device.m");
+// Metal-specific sources (simplified in new llama.cpp)
+__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal.m");
 __static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-impl.h");
-__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp");
-__static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.h");
 __static_yoink("llama.cpp/ggml/src/ggml-metal/ggml-metal.metal");
 
 static const struct Source {
@@ -74,21 +75,11 @@ static const struct Source {
     {"/zip/llama.cpp/ggml/src/ggml-common.h", "llama.cpp/ggml/src/ggml-common.h"},
     {"/zip/llama.cpp/ggml/src/ggml-quants.h", "llama.cpp/ggml/src/ggml-quants.h"},
     {"/zip/llamafile/llamafile.h", "llamafile/llamafile.h"},
-    // Metal headers
-    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-common.h", "llama.cpp/ggml/src/ggml-metal/ggml-metal-common.h"},
-    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-context.h", "llama.cpp/ggml/src/ggml-metal/ggml-metal-context.h"},
-    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-device.h", "llama.cpp/ggml/src/ggml-metal/ggml-metal-device.h"},
+    // Metal files (simplified in new llama.cpp - single .m file + header + shaders)
     {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-impl.h", "llama.cpp/ggml/src/ggml-metal/ggml-metal-impl.h"},
-    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.h", "llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.h"},
-    // Metal shaders
     {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal.metal", "llama.cpp/ggml/src/ggml-metal/ggml-metal.metal"},
-    // Metal sources (compiled into .dylib)
-    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-common.cpp", "llama.cpp/ggml/src/ggml-metal/ggml-metal-common.cpp"},
-    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-context.m", "llama.cpp/ggml/src/ggml-metal/ggml-metal-context.m"},
-    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-device.cpp", "llama.cpp/ggml/src/ggml-metal/ggml-metal-device.cpp"},
-    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-device.m", "llama.cpp/ggml/src/ggml-metal/ggml-metal-device.m"},
-    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp", "llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp"},
-    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal.cpp", "llama.cpp/ggml/src/ggml-metal/ggml-metal.cpp"}, // main file last
+    // Metal source (compiled into .dylib)
+    {"/zip/llama.cpp/ggml/src/ggml-metal/ggml-metal.m", "llama.cpp/ggml/src/ggml-metal/ggml-metal.m"},
 };
 
 static struct Metal {

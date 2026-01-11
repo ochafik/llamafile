@@ -21,6 +21,30 @@
 
 #include <libc/intrin/x86.h>
 
+// [llamafile] Define structs for GPU device properties
+// These are llamafile-specific and not part of upstream llama.cpp
+struct ggml_cuda_device_properties {
+    char name[256];
+    size_t totalGlobalMem;
+    int multiProcessorCount;
+    int major;
+    int minor;
+    char compute[8];
+};
+
+struct ggml_metal_device_properties {
+    char name[256];
+    float memory;
+    int core_count;
+    int metal_version;
+    int gpu_family;
+    int gpu_family_common;
+};
+
+// [llamafile] Forward declare functions implemented in llamafile/cuda.c and llamafile/metal.c
+extern "C" void ggml_backend_cuda_get_device_properties(int device, struct ggml_cuda_device_properties *properties);
+extern "C" void ggml_backend_metal_get_device_properties(void *backend, struct ggml_metal_device_properties *properties);
+
 #ifdef __x86_64__
 void cpuid(unsigned leaf, unsigned subleaf, unsigned *info) {
     asm("movq\t%%rbx,%%rsi\n\t"

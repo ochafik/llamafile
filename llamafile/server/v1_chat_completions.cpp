@@ -19,7 +19,7 @@
 #include "chat.h"
 #include "llama.cpp/include/llama.h"
 #include "llama.cpp/common/sampling.h"
-#include "llama.cpp/vendor/nlohmann/json.hpp"
+#include "llama.cpp/common/json.hpp"
 #include "llamafile/json.h"
 #include "llamafile/llama.h"
 #include "llamafile/llamafile.h"
@@ -64,10 +64,12 @@ static std::string apply_chat_template(
     // Get template from model if not provided
     std::string template_str;
     if (!tmpl || !*tmpl) {
-        char buf[4096];
-        int n = llama_model_meta_val_str(model, "tokenizer.chat_template", buf, sizeof(buf));
+        // First get the required size
+        int n = llama_model_meta_val_str(model, "tokenizer.chat_template", nullptr, 0);
         if (n > 0) {
-            template_str.assign(buf, n);
+            template_str.resize(n + 1);  // Allocate space for string + null terminator
+            llama_model_meta_val_str(model, "tokenizer.chat_template", &template_str[0], n + 1);
+            template_str.resize(n);  // Trim to actual content length
             tmpl = template_str.c_str();
         } else {
             // Fall back to chatml
@@ -683,11 +685,9 @@ Client::v1_chat_completions()
     V1ChatCompletionResponse* response = new V1ChatCompletionResponse;
     defer_cleanup(cleanup_response, response);
 
-    // Initialize chat templates for tool support
+    // Initialize chat templates (always use Jinja-based templating for model compatibility)
     common_chat_templates_ptr chat_templates;
-    if (!params->tools.empty()) {
-        chat_templates = common_chat_templates_init(model_, FLAG_chat_template ? FLAG_chat_template : "");
-    }
+    chat_templates = common_chat_templates_init(model_, FLAG_chat_template ? FLAG_chat_template : "");
 
     // turn prompt into atom array that'll fit in context window
     for (;;) {
@@ -696,9 +696,8 @@ Client::v1_chat_completions()
         if (llama_vocab_get_add_bos(vocab) && params->tools.empty())
             state->atoms.emplace_back(llama_vocab_bos(vocab));
 
-        // turn text into tokens
-        if (!params->tools.empty() && chat_templates) {
-            // Use chat templates with tool support
+        // turn text into tokens using Jinja-based templating (supports all model templates)
+        {
             common_chat_templates_inputs inputs;
             inputs.messages = to_common_chat_msgs(params->messages);
             inputs.tools = params->tools;
@@ -723,11 +722,6 @@ Client::v1_chat_completions()
             for (const auto& stop : chat_params.additional_stops) {
                 params->add_stop(model_, stop);
             }
-        } else {
-            // Use simple template application (no tools)
-            auto llama_msgs = params->to_llama_messages();
-            state->prompt = apply_chat_template(
-              model_, FLAG_chat_template, llama_msgs, ADD_ASSISTANT);
         }
         atomize(model_, &state->atoms, state->prompt, PARSE_SPECIAL);
 

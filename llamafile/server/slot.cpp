@@ -263,7 +263,7 @@ Slot::prefill(const std::vector<Atom>& atoms, const ProgressCallback& progress)
 
     // handle special case of empty prefill
     if (atoms.empty()) {
-        llama_memory_clear(llama_get_memory(ctx_), true);
+        llama_kv_self_clear(ctx_);
         history_.clear();
         return 0;
     }
@@ -346,10 +346,9 @@ Slot::prefill(const std::vector<Atom>& atoms, const ProgressCallback& progress)
         skipped_tokens += atoms[i].ctx_used();
 
     // discard tokens from kv cache
-    llama_memory_t mem = llama_get_memory(ctx_);
     int discarded_tokens;
     int relocated_tokens = 0;
-    if (llama_memory_seq_rm(mem, 0, keep_tokens, relocate_p0_tokens)) {
+    if (llama_kv_self_seq_rm(ctx_, 0, keep_tokens, relocate_p0_tokens)) {
         if (relocate_p0 == -1) {
             discarded_tokens = history_tokens - keep_tokens;
             history_.resize(keep);
@@ -361,17 +360,17 @@ Slot::prefill(const std::vector<Atom>& atoms, const ProgressCallback& progress)
             history_.erase(history_.begin() + keep,
                            history_.begin() + relocate_p0);
             // memmove relocated tokens in kv cache
-            llama_memory_seq_add(mem,
-                                 0,
-                                 relocate_p0_tokens,
-                                 relocate_p1_tokens,
-                                 -(relocate_p0_tokens - keep_tokens));
+            llama_kv_self_seq_add(ctx_,
+                                  0,
+                                  relocate_p0_tokens,
+                                  relocate_p1_tokens,
+                                  -(relocate_p0_tokens - keep_tokens));
         }
     } else {
         // models like Mamba can't be partially erased
         SLOG("failed to remove tokens from KV cache");
         discarded_tokens = history_tokens;
-        llama_memory_clear(mem, true);
+        llama_kv_self_clear(ctx_);
         history_.clear();
         skipped = 0;
     }

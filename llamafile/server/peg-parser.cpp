@@ -1,9 +1,9 @@
 #include "common.h"
 #include "peg-parser.h"
 #include "json-schema-to-grammar.h"
-#include "llama.cpp/common/unicode.h"
+#include "llama.cpp/src/unicode.h"
 
-#include "llama.cpp/vendor/nlohmann/json.hpp"
+#include "llama.cpp/common/json.hpp"
 
 #include <algorithm>
 #include <initializer_list>

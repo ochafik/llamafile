@@ -70,7 +70,7 @@ void test::run() {
         curr_run = i;
         t_processed = 0;
         t_gen = 0;
-        llama_memory_clear(llama_get_memory(ctx), false);
+        llama_kv_self_clear(ctx);
 
         time_interval interval;
         interval.start = utils::get_time_ns();

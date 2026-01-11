@@ -4,7 +4,7 @@
 #include "llama.cpp/common/log.h"
 #include "llama.cpp/ggml/include/ggml.h"
 
-#include "llama.cpp/vendor/nlohmann/json.hpp"
+#include "llama.cpp/common/json.hpp"
 
 #include <string>
 #include <regex>

@@ -10,7 +10,7 @@ LLAMAFILE_SERVER_SRCS = $(filter %.cpp,$(LLAMAFILE_SERVER_FILES))
 LLAMAFILE_SERVER_OBJS = $(LLAMAFILE_SERVER_SRCS:%.cpp=o/$(MODE)/%.o)
 LLAMAFILE_SERVER_ASSETS = $(wildcard llamafile/server/www/*)
 
-$(LLAMAFILE_SERVER_OBJS): private CCFLAGS += -g -Illama.cpp/vendor
+$(LLAMAFILE_SERVER_OBJS): private CCFLAGS += -g -Illama.cpp/vendor -Illama.cpp/ggml/include
 
 o/$(MODE)/llamafile/server/server.a:						\
 		$(filter-out %_test.o,$(LLAMAFILE_SERVER_OBJS))
@@ -50,6 +50,7 @@ o/$(MODE)/llamafile/server/tokenbucket_test:					\
 		o/$(MODE)/llamafile/server/tokenbucket_test.o			\
 		o/$(MODE)/llamafile/server/tokenbucket.o			\
 		o/$(MODE)/llamafile/server/log.o				\
+		o/$(MODE)/llamafile/server/time.o				\
 		o/$(MODE)/llama.cpp/llama.cpp.a					\
 
 .PHONY: o/$(MODE)/llamafile/server

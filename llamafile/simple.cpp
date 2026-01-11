@@ -34,7 +34,7 @@ int main(int argc, char **argv) {
     common_params params;
     params.n_ctx = 0;
 
-    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_COMPLETION))
+    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_MAIN))
         return 1;
 
     if (params.prompt.empty())
@@ -52,12 +52,12 @@ int main(int argc, char **argv) {
     // Update n_gpu_layers for llamafile
     params.n_gpu_layers = llamafile_gpu_layers(35);
 
-    // Use common_init_from_params to initialize model, context, and sampler
-    common_init_result_ptr common_init = common_init_from_params(params);
+    // Use common_init_from_params to initialize model and context
+    common_init_result init_result = common_init_from_params(params);
 
-    llama_model *model = common_init->model();
-    llama_context *ctx = common_init->context();
-    common_sampler *smpl = common_init->sampler(0);
+    llama_model *model = init_result.model.get();
+    llama_context *ctx = init_result.context.get();
+    common_sampler *smpl = common_sampler_init(model, params.sampling);
 
     if (model == NULL)
         return 2;

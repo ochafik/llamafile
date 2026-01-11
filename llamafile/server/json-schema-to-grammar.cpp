@@ -1,7 +1,7 @@
 #include "json-schema-to-grammar.h"
 #include "common.h"
 
-#include "llama.cpp/vendor/nlohmann/json.hpp"
+#include "llama.cpp/common/json.hpp"
 
 #include <algorithm>
 #include <map>

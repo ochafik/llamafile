@@ -8,8 +8,8 @@
 #include "llama.cpp/common/log.h"
 #include "regex-partial.h"
 
-#include "llama.cpp/vendor/minja/chat-template.hpp"
-#include "llama.cpp/vendor/minja/minja.hpp"
+#include "llama.cpp/common/minja/chat-template.hpp"
+#include "llama.cpp/common/minja/minja.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -681,9 +681,7 @@ const char * common_chat_format_name(common_chat_format format) {
 const char * common_reasoning_format_name(common_reasoning_format format) {
     switch (format) {
         case COMMON_REASONING_FORMAT_NONE:     return "none";
-        case COMMON_REASONING_FORMAT_AUTO:     return "auto";
         case COMMON_REASONING_FORMAT_DEEPSEEK: return "deepseek";
-        case COMMON_REASONING_FORMAT_DEEPSEEK_LEGACY: return "deepseek-legacy";
         default:
             throw std::runtime_error("Unknown reasoning format");
     }
@@ -692,12 +690,9 @@ const char * common_reasoning_format_name(common_reasoning_format format) {
 common_reasoning_format common_reasoning_format_from_name(const std::string & format) {
     if (format == "none") {
         return COMMON_REASONING_FORMAT_NONE;
-    } else if (format == "auto") {
-        return COMMON_REASONING_FORMAT_AUTO;
-    } else if (format == "deepseek") {
+    } else if (format == "auto" || format == "deepseek" || format == "deepseek-legacy") {
+        // [llamafile] "auto" and "deepseek-legacy" are deprecated, map to "deepseek"
         return COMMON_REASONING_FORMAT_DEEPSEEK;
-    } else if (format == "deepseek-legacy") {
-        return COMMON_REASONING_FORMAT_DEEPSEEK_LEGACY;
     }
     throw std::runtime_error("Unknown reasoning format: " + format);
 }
