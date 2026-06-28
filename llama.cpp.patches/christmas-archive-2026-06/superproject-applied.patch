@@ -1,0 +1,162 @@
+diff --git a/build/config.mk b/build/config.mk
+index 77e116caa..df8a3f659 100644
+--- a/build/config.mk
++++ b/build/config.mk
+@@ -15,7 +15,7 @@ INSTALL = install
+ ARFLAGS = rcsD
+ CXXFLAGS = -frtti -std=gnu++23
+ CCFLAGS = -O2 -g -fexceptions -ffunction-sections -fdata-sections -mclang
+-CPPFLAGS_ = -iquote. -mcosmo -DGGML_MULTIPLATFORM -Wno-attributes -DLLAMAFILE_DEBUG
++CPPFLAGS_ = -iquote. -mcosmo -DGGML_MULTIPLATFORM -Wno-attributes -DLLAMAFILE_DEBUG -Illama.cpp/ggml/include -Illama.cpp/ggml/src -Illama.cpp/include -Illama.cpp/src -Illama.cpp/vendor -Illama.cpp/common
+ TARGET_ARCH = -Xx86_64-mtune=znver4
+ 
+ TMPDIR = o//tmp
+diff --git a/docs/source_installation.md b/docs/source_installation.md
+index 457d05bfa..22b10dc73 100644
+--- a/docs/source_installation.md
++++ b/docs/source_installation.md
+@@ -24,6 +24,95 @@ make -j8
+ sudo make install PREFIX=/usr/local
+ ```
+ 
++### Building Specific Binaries
++
++You can build individual binaries instead of the full project:
++
++| Binary | Build Command | Description |
++|--------|---------------|-------------|
++| `llamafile` | `make o//llama.cpp/main/main` | Main CLI inference engine |
++| `llamafiler` | `make o//llamafile/server/main` | HTTP server with WebUI |
++| `llamafile-quantize` | `make o//llama.cpp/quantize/quantize` | Model quantization tool |
++| `llamafile-imatrix` | `make o//llama.cpp/imatrix/imatrix` | Importance matrix calculation |
++| `llamafile-bench` | `make o//llama.cpp/llama-bench/llama-bench` | Benchmarking tool |
++| `llamafile-perplexity` | `make o//llama.cpp/perplexity/perplexity` | Perplexity evaluation |
++| `llamafile-tokenize` | `make o//llamafile/tokenize` | Tokenization utility |
++| `llava-quantize` | `make o//llama.cpp/llava/llava-quantize` | Vision model quantization |
++| `zipalign` | `make o//llamafile/zipalign` | ZIP alignment utility |
++| `localscore` | `make o//localscore/localscore` | GPU/CPU benchmarking |
++| `whisperfile` | `make o//whisper.cpp/main` | Speech-to-text |
++| `sdfile` | `make o//stable-diffusion.cpp/main` | Image generation |
++
++Output binaries are placed in the `o//` directory (e.g., `o//llamafile/server/main`).
++
++### Build Modes
++
++The `MODE` variable (shorthand `m`) sets the output directory:
++
++```sh
++# Default mode - outputs to o//
++make o//llamafile/server/main
++
++# Named mode - outputs to o/release/
++make MODE=release o/release/llamafile/server/main
++# or using shorthand:
++make m=release o/release/llamafile/server/main
++
++# Debug mode - outputs to o/debug/
++make m=debug o/debug/llamafile/server/main
++```
++
++Note: The mode name only changes the output directory. Compiler flags
++remain the same by default (`-O2 -g`).
++
++### Customizing Compiler Flags
++
++Override flags on the command line:
++
++```sh
++# Debug build with no optimization
++make CCFLAGS="-O0 -g3" o//llamafile/server/main
++
++# Release build with maximum optimization
++make CCFLAGS="-O3 -DNDEBUG" m=release o/release/llamafile/server/main
++
++# Disable debug symbols
++make CCFLAGS="-O2" o//llama.cpp/main/main
++```
++
++Default compiler settings (from `build/config.mk`):
++
++| Variable | Default | Description |
++|----------|---------|-------------|
++| `CCFLAGS` | `-O2 -g -fexceptions -ffunction-sections -fdata-sections -mclang` | Common C/C++ flags |
++| `CXXFLAGS` | `-frtti -std=gnu++23` | C++ specific flags |
++| `TARGET_ARCH` | `-Xx86_64-mtune=znver4` | Architecture tuning |
++
++### Other Make Targets
++
++```sh
++# Run tests
++make check
++
++# Clean build artifacts
++make clean
++
++# Clean everything including cosmocc toolchain
++make distclean
++
++# Download/setup cosmocc toolchain only
++make cosmocc
++```
++
++### Parallel Builds
++
++Use `-j` for parallel compilation:
++
++```sh
++make -j$(nproc) o//llamafile/server/main   # Linux
++make -j$(sysctl -n hw.ncpu) o//llama.cpp/main/main  # macOS
++```
++
+ Here's an example of how to generate code for a libc function using the
+ llama.cpp command line interface, utilizing WizardCoder-Python-13B
+ weights:
+diff --git a/llama.cpp b/llama.cpp
+--- a/llama.cpp
++++ b/llama.cpp
+@@ -1 +1 @@
+-Subproject commit 3cea47541dfa065e259dbf165e12f2b3a05b8ebc
++Subproject commit 3cea47541dfa065e259dbf165e12f2b3a05b8ebc-dirty
+diff --git a/llamafile/metal.c b/llamafile/metal.c
+index 9ccc990d7..a724bdb74 100644
+--- a/llamafile/metal.c
++++ b/llamafile/metal.c
+@@ -377,6 +377,14 @@ static bool LinkMetal(const char *dso) {
+     ggml_backend_reg_t reg = ggml_metal.reg();
+     if (reg) {
+         ggml_backend_register(reg);
++
++        // Debug: verify what main binary sees
++        ggml_backend_dev_t dev = ggml_backend_reg_dev_get(reg, 0);
++        if (dev) {
++            fprintf(stderr, "[MAIN DEBUG] dev=%p supports_op=%p get_buffer_type=%p buffer_from_host_ptr=%p\n",
++                (void*)dev, (void*)dev->iface.supports_op, (void*)dev->iface.get_buffer_type,
++                (void*)dev->iface.buffer_from_host_ptr);
++        }
+     } else {
+         tinylog("warning: failed to get Metal backend registration\n", NULL);
+     }
+diff --git a/llamafile/sgemm.h b/llamafile/sgemm.h
+index bccc0fde3..770fc34e1 100644
+--- a/llamafile/sgemm.h
++++ b/llamafile/sgemm.h
+@@ -22,9 +22,13 @@ bool iqk_mul_mat_moe_unsupported(long, long, long, int, int, const void *, const
+                                  long, long, const void *, int, int);
+ 
+ // New API signature matching llama.cpp - params contains ith/nth thread info
++// Note: This declaration is guarded to avoid conflicts with the arch-specific
++// #define llamafile_sgemm llamafile_sgemm_amd_XXX macros used in tinyblas_cpu_sgemm_*.cpp
++#ifndef llamafile_sgemm
+ bool llamafile_sgemm(const struct ggml_compute_params *, int64_t, int64_t, int64_t,
+                      const void *, int64_t, const void *, int64_t, void *, int64_t,
+                      int, int, int);
++#endif
+ 
+ // Internal API with explicit ith/nth for architecture-specific implementations
+ bool llamafile_sgemm_impl(long, long, long, const void *, long, const void *, long, void *, long, int,
+diff --git a/whisper.cpp b/whisper.cpp
+--- a/whisper.cpp
++++ b/whisper.cpp
+@@ -1 +1 @@
+-Subproject commit 6739eb83c3ca5cf40d24c6fe8442a761a1eb6248
++Subproject commit 6739eb83c3ca5cf40d24c6fe8442a761a1eb6248-dirty
