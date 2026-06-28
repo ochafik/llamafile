@@ -1,0 +1,18 @@
+diff --git a/llama.cpp/ggml/include/ggml.h b/llama.cpp/ggml/include/ggml.h
+index d6807b6dd..66d519aad 100644
+--- a/llama.cpp/ggml/include/ggml.h
++++ b/llama.cpp/ggml/include/ggml.h
+@@ -429,7 +429,12 @@ extern "C" {
+         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
+         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
+         GGML_TYPE_Q1_0    = 41,
+-        GGML_TYPE_COUNT   = 42,
++        // ik_llama.cpp on-disk enum values preserved so existing ik_llama
++        // quantized GGUFs load (sparse gap 42..136 is zero-filled).
++        GGML_TYPE_IQ2_K   = 137,
++        GGML_TYPE_IQ3_K   = 138,
++        GGML_TYPE_IQ4_K   = 139,
++        GGML_TYPE_COUNT   = 140,
+     };
+ 
+     // precision
