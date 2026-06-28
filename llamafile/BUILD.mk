@@ -146,6 +146,7 @@ LLAMAFILE_SRCS_CPP := \
 	llamafile/datauri.cpp \
 	llamafile/extract_data_uris.cpp \
 	llamafile/image.cpp \
+	llamafile/iqk_quantize_k.cpp \
 	llamafile/llama.cpp \
 	llamafile/string.cpp \
 	llamafile/xterm.cpp \
