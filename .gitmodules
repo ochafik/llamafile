@@ -6,7 +6,7 @@
 	url = https://github.com/leejet/stable-diffusion.cpp.git
 [submodule "llama.cpp"]
 	path = llama.cpp
-	url = https://github.com/ggerganov/llama.cpp.git
+	url = git@github.com:ochafik/llama.cpp-private.git
 [submodule "third_party/zipalign"]
 	path = third_party/zipalign
 	url = https://github.com/jart/zipalign.git
