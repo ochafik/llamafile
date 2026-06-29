@@ -33,6 +33,8 @@
 
 #include "zim/zim.h"
 
+#include "browser_tool.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -368,14 +370,26 @@ void mcp_server_usage(FILE * f) {
         "JSON-RPC 2.0 on stdin/stdout.\n"
         "\n"
         "usage:\n"
-        "  llamafile mcp-server [--zim PATH]\n"
+        "  llamafile mcp-server [--zim PATH] [--browser[-attach [PORT]]]\n"
         "\n"
         "options:\n"
-        "  --zim PATH    path to a .zim archive (default: $LLAMAFILE_ZIM or a\n"
-        "                bundled /zip/wikipedia.zim if present)\n"
+        "  --zim PATH         path to a .zim archive (default: $LLAMAFILE_ZIM or a\n"
+        "                     bundled /zip/wikipedia.zim if present)\n"
+        "  --browser          expose the browser_* tools (in-process CDP; LAUNCH a\n"
+        "                     headless Chrome on demand). OFF by default.\n"
+        "  --browser-attach [PORT]\n"
+        "                     ATTACH to a Chrome you already started with\n"
+        "                     --remote-debugging-port (default 9222) instead of\n"
+        "                     launching one. The model can act in your LIVE browser.\n"
+        "  --browser-headed   LAUNCH a visible window instead of headless.\n"
+        "  --browser-path P   path to the Chrome/Chromium executable (override).\n"
+        "  --browser-allow L  comma-separated domain allowlist (e.g. en.wikipedia.org).\n"
+        "\n"
+        "Either a ZIM archive or --browser (or both) must be provided.\n"
         "\n"
         "register with Claude Code:\n"
-        "  claude mcp add wikipedia -- /path/to/llamafile mcp-server --zim PATH\n");
+        "  claude mcp add wikipedia -- /path/to/llamafile mcp-server --zim PATH\n"
+        "  claude mcp add browser   -- /path/to/llamafile mcp-server --browser\n");
 }
 
 } // namespace
@@ -384,10 +398,39 @@ void mcp_server_usage(FILE * f) {
 int mcp_server_main(int argc, char ** argv) {
     // argv: [0]=llamafile [1]=mcp-server [...]=args
     const char * zim_path = nullptr;
+    bool zim_explicit = false;
+    browser::Options bopts;
 
     for (int i = 2; i < argc; i++) {
         if (!strcmp(argv[i], "--zim") && i + 1 < argc) {
             zim_path = argv[++i];
+            zim_explicit = true;
+        } else if (!strcmp(argv[i], "--browser")) {
+            bopts.enabled = true;
+        } else if (!strcmp(argv[i], "--browser-attach")) {
+            bopts.enabled = true;
+            bopts.attach = true;
+            // Optional PORT follows (only if it looks like a number).
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
+                bopts.attach_port = atoi(argv[++i]);
+            }
+        } else if (!strcmp(argv[i], "--browser-headed")) {
+            bopts.enabled = true;
+            bopts.headed = true;
+        } else if (!strcmp(argv[i], "--browser-path") && i + 1 < argc) {
+            bopts.enabled = true;
+            bopts.browser_path = argv[++i];
+        } else if (!strcmp(argv[i], "--browser-allow") && i + 1 < argc) {
+            std::string list = argv[++i];
+            size_t start = 0;
+            while (start <= list.size()) {
+                size_t comma = list.find(',', start);
+                std::string item = list.substr(
+                    start, comma == std::string::npos ? std::string::npos : comma - start);
+                if (!item.empty()) bopts.allow.push_back(item);
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
         } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             mcp_server_usage(stdout);
             return 0;
@@ -400,12 +443,22 @@ int mcp_server_main(int argc, char ** argv) {
     bool used_default = false;
     if (!zim_path) { zim_path = WIKI_DEFAULT_ZIM; used_default = true; }
 
+    // Wikipedia tools require a ZIM. If --browser is on we can serve without one,
+    // so a missing/unopenable ZIM is only fatal when browser tools are also off.
     g_zim = zim_open(zim_path);
-    if (!g_zim) {
+    if (g_zim) {
+        register_wiki_tools();
+    } else if (bopts.enabled && !zim_explicit && used_default) {
+        // No ZIM given, but browser tools requested — that's fine.
+    } else if (bopts.enabled) {
+        fprintf(stderr, "mcp-server: ZIM '%s' unavailable (%s); serving browser tools only.\n",
+                zim_path, zim_error());
+    } else {
         // Diagnostics to stderr only — stdout must stay a clean protocol channel.
         if (used_default) {
-            fprintf(stderr, "mcp-server: no ZIM archive specified. Pass --zim PATH "
-                            "(or set $LLAMAFILE_ZIM, or bundle one at %s).\n",
+            fprintf(stderr, "mcp-server: no tools enabled. Pass --zim PATH "
+                            "(or set $LLAMAFILE_ZIM, or bundle one at %s) "
+                            "and/or pass --browser.\n",
                     WIKI_DEFAULT_ZIM);
         } else {
             fprintf(stderr, "mcp-server: failed to open ZIM '%s': %s\n",
@@ -414,9 +467,19 @@ int mcp_server_main(int argc, char ** argv) {
         return 1;
     }
 
-    register_wiki_tools();
-    fprintf(stderr, "mcp-server: serving %zu tool(s) from ZIM '%s' over stdio\n",
-            g_tools.size(), zim_path);
+    browser::register_browser_tools(bopts, [](const std::string & name,
+                                              const std::string & description,
+                                              const browser::json & inputSchema,
+                                              std::function<browser::json(const browser::json &)> handler) {
+        g_tools.push_back(Tool{ name, description, inputSchema, handler });
+    });
+
+    if (g_tools.empty()) {
+        fprintf(stderr, "mcp-server: no tools enabled (no ZIM and no --browser).\n");
+        return 1;
+    }
+
+    fprintf(stderr, "mcp-server: serving %zu tool(s) over stdio\n", g_tools.size());
 
     // Read newline-delimited JSON-RPC from stdin, one message per line.
     std::string line;
