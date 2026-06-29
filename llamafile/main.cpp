@@ -288,9 +288,21 @@ static int combined_main(const LlamafileArgs &args) {
 } // namespace lf
 
 int main(int argc, char **argv) {
+    // A subcommand invocation (the CLI `wikipedia`/`wikidata`/`mcp-probe`/
+    // `mtmd-video-cli`, or — crucially — a self-spawned `mcp-server` bridge from
+    // a BUNDLED llamafile whose --zim/--wikidata flags re-exec this same binary)
+    // must NOT inherit the bundled server `.args`: those would shadow the
+    // subcommand (argv[1] would become "--server"). Detect it from the ORIGINAL
+    // argv, before .args expansion.
+    const bool is_subcommand = argc > 1 && (
+        !strcmp(argv[1], "wikipedia")    || !strcmp(argv[1], "wiki")     ||
+        !strcmp(argv[1], "wikidata")     || !strcmp(argv[1], "mcp-server") ||
+        !strcmp(argv[1], "mcp-probe")    || !strcmp(argv[1], "mtmd-video-cli"));
+
     // Load arguments from zip file if present (for bundled llamafiles)
 #ifdef COSMOCC
-    argc = cosmo_args("/zip/.args", &argv);
+    if (!is_subcommand)
+        argc = cosmo_args("/zip/.args", &argv);
 #endif
 
     // Handle --version before anything else (ignores all other arguments)

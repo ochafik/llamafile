@@ -159,6 +159,23 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
             continue;
         }
 
+        // --zim PATH: enable the offline Wikipedia title tools (wiki_search/
+        // wiki_get_article) in --server mode by bridging them in via our own
+        // mcp-server subprocess (same path as a manual `--mcp 'llamafile mcp-server
+        // --zim …'`), so they land in the /tools registry. Consumed here so it never
+        // reaches llama.cpp's parser. (The `wikipedia`/`mcp-server` subcommands take
+        // --zim too; this makes it a first-class --server flag like --wikidata.)
+        if (strcmp(arg, "--zim") == 0) {
+            if (i + 1 < argc) {
+                std::string self = (argc > 0 && argv[0]) ? argv[0] : "llamafile";
+                std::string cmd = "'" + self + "' mcp-server --zim '" +
+                                  std::string(argv[i + 1]) + "'";
+                llamafile_mcp_add_server(cmd);
+                ++i;
+            }
+            continue;
+        }
+
         // --wikidata PATH: enable the offline Wikidata fact tools (wikidata_*)
         // in --server mode by bridging them in via our own mcp-server subprocess
         // (the same path as a manual `--mcp 'llamafile mcp-server --wikidata …'`),
