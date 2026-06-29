@@ -293,3 +293,14 @@ Anthropic shim is **not** needed as a prototype — it already exists (§C7-ii);
 4. Measure role-prompt prefill time to decide if the §A4 KV bundle is worth shipping vs runtime warming.
 5. Decide adapter strategy (§A5): prompt-only role steering first; LoRA only if insufficient — and remember different-adapter slots don't co-batch.
 ```
+
+---
+
+## Addendum — Claude Code drop-in VERIFIED live (2026-06-29)
+
+Tested the vendored Anthropic Messages API directly against `llamafile --server --jinja` (Qwen3.6-35B-A3B):
+`POST /v1/messages` with an **Anthropic-format** request (`messages` + `tools[].input_schema`) returned a fully **Anthropic-format** response:
+- `type:"message"`, `role:"assistant"`, `stop_reason:"tool_use"`
+- `content` blocks = `["thinking", "tool_use"]`, with `tool_use` = `search_wikipedia({"query":"Eiffel Tower"})`.
+
+This confirms the headline finding at the wire level: **Claude Code can use llamafile as a backend** via `ANTHROPIC_BASE_URL=http://host:port` + a dummy `ANTHROPIC_AUTH_TOKEN` + `--jinja`, including native tool-calling (and thinking blocks). Remaining for a full CC session: verify the multi-turn `tool_result` round-trip through `/v1/messages` and beta-header tolerance — but the core protocol + tool_use path works today. CC-dropin is no longer "~80% built" speculation; the tool round-trip's first half is empirically validated.
