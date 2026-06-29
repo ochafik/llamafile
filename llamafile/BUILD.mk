@@ -148,6 +148,7 @@ LLAMAFILE_SRCS_CPP := \
 	llamafile/image.cpp \
 	llamafile/iqk_quantize_k.cpp \
 	llamafile/llama.cpp \
+	llamafile/mcp_server.cpp \
 	llamafile/string.cpp \
 	llamafile/wiki_cli.cpp \
 	llamafile/xterm.cpp \

@@ -104,6 +104,9 @@ extern int server_main(int argc, char **argv,
 // `llamafile wikipedia ...` CLI (offline Wikipedia / ZIM); see wiki_cli.cpp.
 extern int wiki_cli_main(int argc, char **argv);
 
+// `llamafile mcp-server ...` — MCP server over stdio; see mcp_server.cpp.
+extern int mcp_server_main(int argc, char **argv);
+
 static void print_general_help() {
     printf("llamafile v" LLAMAFILE_VERSION_STRING " - run LLMs locally\n"
            "\n"
@@ -290,6 +293,13 @@ int main(int argc, char **argv) {
     // no GPU init and no llama.cpp arg parsing.
     if (argc > 1 && (!strcmp(argv[1], "wikipedia") || !strcmp(argv[1], "wiki"))) {
         return wiki_cli_main(argc, argv);
+    }
+
+    // `llamafile mcp-server [--zim PATH]` subcommand: run an MCP server over
+    // stdio (newline-delimited JSON-RPC 2.0) exposing the embedded-Wikipedia
+    // tools. Dispatched early — needs only the ZIM reader, no model/server/GPU.
+    if (argc > 1 && !strcmp(argv[1], "mcp-server")) {
+        return mcp_server_main(argc, argv);
     }
 
     // Diagnostic: when LLAMAFILE_TRACE_SIGNALS=1 is set, log every
