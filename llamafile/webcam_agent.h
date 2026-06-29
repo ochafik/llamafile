@@ -34,8 +34,12 @@
 //   GET  /agent/events  (SSE)                  -> per-frame action/note/speak/
 //                                                 tool_call/tool_result stream
 //   POST /agent/stop                           -> destroy session, free ctx
-//   POST /agent/clip    (501; step 3)          -> 30s-buffer email attachment
-//   POST /agent/live    (501; step 3)          -> live-link relay
+//   POST /agent/clip                           -> store opaque 30s WebM blob,
+//   GET  /agent/clip/<id>.webm                    return {url}; serve it back
+//   GET  /agent/live                           -> tiny live page (latest frame
+//   GET  /agent/live/frame.jpg                    + SSE action stream relay)
+//   GET  /agent/tools                          -> built-in + bridged MCP tools
+//   GET  /agent/ui  (alias /webcam)            -> embedded webcam-agent web UI
 //
 // See /Users/ochafik/github/llama.cpp-video-ddocs/04-server-agent-mode-and-protocol.md
 // The session itself is llamafile/vlib_video/vlib_video_session.{h,cpp} (step 1).

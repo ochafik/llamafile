@@ -285,6 +285,13 @@ LLAMAFILE_METAL_SOURCES := \
 	o/$(MODE)/llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.h.zip.o \
 	o/$(MODE)/llama.cpp/ggml/src/ggml-metal/ggml-metal-ops.cpp.zip.o
 
+# Webcam-agent web UI assets, embedded in the APE via zipobj and served from
+# the /zip/ virtual FS at runtime (see llamafile/webcam_agent.cpp serve_zip()).
+# Runtime paths: /zip/llamafile/webcam_ui/<file>.
+LLAMAFILE_WEBCAM_UI_ASSETS := \
+	o/$(MODE)/llamafile/webcam_ui/webcam-agent.html.zip.o \
+	o/$(MODE)/llamafile/webcam_ui/frame-selection.js.zip.o
+
 # Use deferred expansion (=) since this depends on variables from llama.cpp/BUILD.mk
 LLAMAFILE_DEPS = \
 	$(GGML_OBJS) \
@@ -295,6 +302,7 @@ LLAMAFILE_DEPS = \
 	$(LLAMAFILE_SERVER_SUPPORT_OBJS) \
 	$(LLAMAFILE_HIGHLIGHT_KEYWORDS) \
 	$(LLAMAFILE_METAL_SOURCES) \
+	$(LLAMAFILE_WEBCAM_UI_ASSETS) \
 	$(TINYBLAS_CPU_OBJS) \
 	$(LLAMAFILE_ZIM_OBJS) \
 	o/$(MODE)/third_party/stb/stb_image_resize2.o

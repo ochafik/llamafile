@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>llamafile Webcam Agent</title>
+<style>
+  :root { color-scheme: dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+  body { margin: 0; background:#0b0d10; color:#e6e8eb; display:grid; grid-template-columns: 1fr 400px; gap:12px; padding:12px; height:100vh; box-sizing:border-box; }
+  .stage { position:relative; background:#000; border-radius:10px; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  video { width:100%; height:100%; object-fit:contain; }
+  .hud { position:absolute; left:8px; top:8px; font:12px/1.4 ui-monospace,monospace; background:#0008; padding:6px 8px; border-radius:6px; }
+  .hud b { color:#7fd1b9; }
+  aside { display:flex; flex-direction:column; gap:10px; min-width:0; overflow:auto; }
+  fieldset { border:1px solid #222831; border-radius:8px; padding:10px; }
+  legend { color:#9aa4af; font-size:12px; padding:0 6px; }
+  label { font-size:12px; color:#9aa4af; display:block; margin-top:6px; }
+  input, textarea, select, button { width:100%; box-sizing:border-box; background:#11151a; color:#e6e8eb; border:1px solid #283039; border-radius:6px; padding:7px; font:13px ui-sans-serif; }
+  button { cursor:pointer; background:#1c2530; margin-top:8px; }
+  button.go { background:#1f6f54; border-color:#2c8e6c; }
+  button.stop { background:#7a2a2a; border-color:#9c3a3a; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  #log { flex:1; min-height:120px; overflow:auto; background:#0e1217; border:1px solid #222831; border-radius:8px; padding:8px; font:12px/1.5 ui-monospace,monospace; }
+  .ev { margin-bottom:4px; }
+  .ev .t { color:#5b6672; }
+  .ev.sent { color:#7fd1b9; } .ev.skip { color:#5b6672; } .ev.act { color:#e0b057; }
+  .ev.err { color:#e06b6b; } .ev.note { color:#9ab6e0; } .ev.speak { color:#c79bf0; }
+  .ev.tool { color:#7fd1b9; }
+  .pill { display:inline-block; padding:1px 6px; border-radius:10px; background:#1c2530; font-size:11px; margin-left:4px; }
+  canvas.thumb { image-rendering:pixelated; width:64px; height:64px; border:1px solid #283039; border-radius:4px; }
+  .stat { display:flex; gap:10px; flex-wrap:wrap; font:12px ui-monospace,monospace; color:#9aa4af; }
+  .stat b { color:#e6e8eb; }
+  #mcp { font:12px/1.5 ui-monospace,monospace; color:#9aa4af; max-height:120px; overflow:auto; white-space:pre-wrap; }
+  a { color:#7fd1b9; }
+  .ok { color:#7fd1b9; } .bad { color:#e06b6b; }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="hud" id="hud">idle</div>
+  </div>
+  <aside>
+    <fieldset>
+      <legend>Webcam Agent</legend>
+      <label>Watch prompt</label>
+      <textarea id="prompt" rows="2">Tell me if a person approaches, and note when the scene changes.</textarea>
+      <div class="row">
+        <div><label>Max FPS</label><input id="maxfps" type="number" value="3" min="0.2" step="0.2" /></div>
+        <div><label>MSE threshold</label><input id="mse" type="number" value="0.005" step="0.001" /></div>
+      </div>
+      <div class="row">
+        <div><label>Sample FPS</label><input id="samplefps" type="number" value="5" min="1" step="1" /></div>
+        <div><label>Frame size (px, /28)</label><input id="framesize" type="number" value="448" min="28" step="28" /></div>
+      </div>
+      <button id="start" class="go">Start camera + agent</button>
+      <button id="stop" class="stop" disabled>Stop</button>
+      <button id="emailtest">Assemble &amp; upload last 30 s clip</button>
+      <div style="margin-top:8px"><a id="livelink" href="/agent/live" target="_blank">Open live link &rarr;</a></div>
+    </fieldset>
+    <fieldset>
+      <legend>Connected MCP tools</legend>
+      <div class="stat"><span>status: <b id="mcpstatus">…</b></span></div>
+      <div id="mcp">querying /agent/tools …</div>
+    </fieldset>
+    <fieldset>
+      <legend>Selection telemetry</legend>
+      <div class="stat">
+        <span>codec hints: <b id="codecstat">?</b></span>
+        <span>sent: <b id="nsent">0</b></span>
+        <span>skipped: <b id="nskip">0</b></span>
+        <span>ring: <b id="ring">0</b> chunks</span>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;">
+        <canvas class="thumb" id="thumb" width="64" height="64"></canvas>
+        <div class="stat" style="flex-direction:column;gap:2px;">
+          <span>last mse: <b id="lmse">—</b></span>
+          <span>motion: <b id="lmotion">—</b></span>
+          <span>reason: <b id="lreason">—</b></span>
+        </div>
+      </div>
+    </fieldset>
+    <div id="log"></div>
+  </aside>
+
+<script type="module">
+import { FrameSelector, attachCodecHints } from '/agent/ui/frame-selection.js';
+
+// Same-origin: this page is served by the llamafile that hosts /agent/*.
+const API = '';
+
+const $ = (id) => document.getElementById(id);
+const log = (cls, msg) => {
+  const d = document.createElement('div'); d.className = 'ev ' + cls;
+  d.innerHTML = `<span class="t">${new Date().toLocaleTimeString()}</span> ${msg}`;
+  $('log').prepend(d);
+};
+const esc = (s) => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+let stream, selector, detachCodec = () => {}, running = false;
+let rec, ring = [], initSeg = null, mime = 'video/webm';
+let nsent = 0, nskip = 0, inflight = false, sampleTimer = null, evtSource = null;
+
+// ---- MCP tool / status panel -------------------------------------------------
+async function refreshTools() {
+  try {
+    const r = await fetch(API + '/agent/tools');
+    const j = await r.json();
+    $('mcpstatus').innerHTML = `<span class="ok">${j.mcp_tool_count} MCP + ${j.builtin_tools.length} built-in</span>`;
+    let txt = 'Built-in: ' + j.builtin_tools.join(', ') + '\n';
+    txt += j.mcp_tool_count
+      ? '\nMCP tools (the agent can call these):\n' + j.mcp_tools_prompt
+      : '\nNo --mcp servers connected (start llamafile with --mcp "<cmd>" to give the agent action tools like send_email).';
+    $('mcp').textContent = txt;
+  } catch (e) {
+    $('mcpstatus').innerHTML = '<span class="bad">unreachable</span>';
+    $('mcp').textContent = 'failed to query /agent/tools: ' + e.message;
+  }
+}
+
+// ---- lifecycle ---------------------------------------------------------------
+async function start() {
+  stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
+  $('video').srcObject = stream;
+  const track = stream.getVideoTracks()[0];
+  const { width, height } = track.getSettings();
+
+  selector = new FrameSelector({
+    mseThreshold: parseFloat($('mse').value),
+    maxFps: parseFloat($('maxfps').value),
+  });
+  $('codecstat').textContent = selector.codecAvailable ? 'on (WebCodecs)' : 'OFF → perceptual only';
+  detachCodec = attachCodecHints(track, selector, { width, height });
+
+  // 30 s ring buffer (opaque encoded WebM) — the email/live-link source (doc 05).
+  ring = []; initSeg = null;
+  try {
+    mime = pickMime();
+    rec = new MediaRecorder(stream, { mimeType: mime });
+    rec.ondataavailable = (e) => {
+      if (!e.data || !e.data.size) return;
+      if (!initSeg) initSeg = e.data;            // R-05: keep the init segment
+      ring.push({ t: performance.now(), blob: e.data });
+      const cutoff = performance.now() - 30_000;
+      while (ring.length > 1 && ring[1].t < cutoff) ring.splice(1, 1); // keep initSeg at [0]
+      $('ring').textContent = ring.length;
+    };
+    rec.start(1000);
+  } catch (e) { log('err', 'MediaRecorder unavailable: ' + e.message); }
+
+  // Start the server-side agent session.
+  try {
+    const body = { prompt: $('prompt').value, frame_size: parseInt($('framesize').value) || 448 };
+    const r = await fetch(API + '/agent/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!r.ok || !j.ok) { log('err', 'agent start failed: ' + (j.error || r.status)); }
+    else log('act', `agent session started (frame_size ${j.frame_size})`);
+  } catch (e) { log('err', 'agent start failed: ' + e.message); }
+
+  openEvents();
+
+  running = true;
+  $('start').disabled = true; $('stop').disabled = false;
+  const sampleMs = 1000 / parseFloat($('samplefps').value);
+  sampleTimer = setInterval(tick, sampleMs);
+  log('act', `started ${width}x${height}`);
+}
+
+function pickMime() {
+  for (const m of ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4'])
+    if (MediaRecorder.isTypeSupported(m)) return m;
+  return '';
+}
+
+// ---- SSE events --------------------------------------------------------------
+function openEvents() {
+  try { evtSource && evtSource.close(); } catch {}
+  evtSource = new EventSource(API + '/agent/events');
+  evtSource.onmessage = (m) => {
+    let e; try { e = JSON.parse(m.data); } catch { return; }
+    switch (e.type) {
+      case 'started':   log('act', 'server: session started'); break;
+      case 'frame':     log('act', `frame #${e.frame} → <b>${esc(e.action)}</b>` + (e.raw ? ` <span class="pill">${esc(e.raw).slice(0,60)}</span>` : '')); break;
+      case 'continuation': log('act', `frame #${e.frame} cont → <b>${esc(e.action)}</b>`); break;
+      case 'note':      log('note', `📝 note: ${esc(e.text)}`); break;
+      case 'speak':     log('speak', `🔊 speak: ${esc(e.text)}`); break;
+      case 'tool_call': log('tool', `🛠 tool_call <b>${esc(e.name)}</b> ${esc(JSON.stringify(e.arguments||{}))}`); maybeCaptureClip(); break;
+      case 'tool_result': log('tool', `↳ ${esc(e.name)} → ${esc(String(e.result)).slice(0,120)}`); break;
+      case 'capture_clip': log('act', 'server requested clip capture'); assembleAndUpload(); break;
+      case 'error':     log('err', 'server: ' + esc(e.message)); break;
+      case 'stopped':   log('act', 'server: session stopped'); break;
+    }
+  };
+  evtSource.onerror = () => { /* auto-reconnects */ };
+}
+
+// On any external tool_call (e.g. send_email) make sure a fresh clip URL exists.
+let lastAutoUpload = 0;
+function maybeCaptureClip() {
+  if (performance.now() - lastAutoUpload < 5000) return;
+  lastAutoUpload = performance.now();
+  assembleAndUpload();
+}
+
+// ---- frame sampling / selection ---------------------------------------------
+const video = () => $('video');
+function tick() {
+  if (!running) return;
+  const v = selector.consider(video());
+  $('lmse').textContent = v.mse?.toFixed(5) ?? '—';
+  $('lmotion').textContent = v.motion?.toFixed(2) ?? '—';
+  $('lreason').textContent = v.reason;
+  $('thumb').getContext('2d').drawImage(video(), 0, 0, 64, 64);
+  $('hud').innerHTML = `mse <b>${(v.mse||0).toFixed(4)}</b> · motion <b>${(v.motion||0).toFixed(2)}</b> · <b>${v.reason}</b> · sent <b>${nsent}</b>`;
+  if (!v.send) { nskip++; $('nskip').textContent = nskip; return; }
+  if (inflight) { nskip++; $('nskip').textContent = nskip; log('skip', `drop (busy) <span class="pill">${v.reason}</span>`); return; }
+  sendFrame(v);
+}
+
+async function sendFrame(v) {
+  const vid = video();
+  const c = document.createElement('canvas');
+  c.width = 768; c.height = Math.round(768 * vid.videoHeight / vid.videoWidth);
+  c.getContext('2d').drawImage(vid, 0, 0, c.width, c.height);
+  const jpeg = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.8));
+  nsent++; $('nsent').textContent = nsent;
+  const meta = { ts: Date.now()/1000, w: c.width, h: c.height, motion_score: +v.motion.toFixed(3), is_keyframe: v.isKeyframe, seq: nsent };
+  log('sent', `frame #${nsent} ${(jpeg.size/1024|0)}KB <span class="pill">${v.reason}</span> <span class="pill">m=${meta.motion_score}</span>`);
+  inflight = true;
+  try {
+    const fd = new FormData();
+    fd.append('jpeg', jpeg, `f${nsent}.jpg`); fd.append('meta', JSON.stringify(meta));
+    const res = await fetch(API + '/agent/frame', { method: 'POST', body: fd });
+    if (res.status === 409) log('skip', 'server busy (409)');
+    else if (!res.ok) log('err', 'frame POST ' + res.status);
+  } catch (e) { log('err', 'frame POST failed: ' + e.message); }
+  finally { inflight = false; }
+}
+
+// ---- clip assembly + upload to the relay ------------------------------------
+function assembleClip() {
+  if (!ring.length) { return null; }
+  const parts = ring.map(r => r.blob);                 // [initSeg, ...recent]
+  return new Blob(parts, { type: mime || 'video/webm' });
+}
+
+async function assembleAndUpload() {
+  const clip = assembleClip();
+  if (!clip) { log('err', 'ring empty — nothing to upload'); return null; }
+  try {
+    const res = await fetch(API + '/agent/clip', { method: 'POST', headers: { 'Content-Type': 'video/webm' }, body: clip });
+    const j = await res.json();
+    if (!res.ok || !j.url) { log('err', 'clip upload failed: ' + (j.error || res.status)); return null; }
+    log('act', `clip uploaded ${(clip.size/1024|0)}KB → <a href="${j.url}" target="_blank">${j.url}</a>`);
+    return j.url;
+  } catch (e) { log('err', 'clip upload failed: ' + e.message); return null; }
+}
+
+function stop() {
+  running = false; clearInterval(sampleTimer); detachCodec();
+  try { rec && rec.state !== 'inactive' && rec.stop(); } catch {}
+  try { evtSource && evtSource.close(); } catch {}
+  stream && stream.getTracks().forEach(t => t.stop());
+  fetch(API + '/agent/stop', { method: 'POST' }).catch(() => {});
+  $('start').disabled = false; $('stop').disabled = true; $('hud').textContent = 'stopped';
+  log('act', `stopped — sent ${nsent}, skipped ${nskip}`);
+}
+
+$('start').onclick = () => start().catch(e => log('err', e.message));
+$('stop').onclick = stop;
+$('emailtest').onclick = () => assembleAndUpload();
+refreshTools();
+log('act', 'ready — Start to grant camera (http://127.0.0.1 is a secure context, no TLS needed).');
+</script>
+</body>
+</html>

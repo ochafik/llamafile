@@ -56,10 +56,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using json = nlohmann::ordered_json;
@@ -122,6 +124,65 @@ struct EventBroker {
 };
 
 // ---------------------------------------------------------------------------
+// Clip relay store — opaque WebM bytes in, opaque bytes out (NO server decode).
+// A bounded ring: at most MAX_CLIPS entries and MAX_TOTAL_BYTES total; the
+// oldest is evicted first. Keyed by a random id; served back verbatim with a
+// video/webm content-type so an MCP email tool can link/attach the clip.
+// ---------------------------------------------------------------------------
+struct ClipStore {
+    static constexpr size_t MAX_CLIPS       = 8;
+    static constexpr size_t MAX_TOTAL_BYTES = 256u * 1024u * 1024u;  // 256 MiB
+
+    std::mutex                                       mu;
+    std::deque<std::string>                          order;   // ids, oldest first
+    std::unordered_map<std::string, std::string>     blobs;   // id -> raw bytes
+    std::string                                      latest_id;
+    size_t                                           total_bytes = 0;
+
+    // Store bytes under a fresh id; evict as needed. Returns the new id.
+    std::string put(std::string bytes) {
+        std::lock_guard<std::mutex> lk(mu);
+        std::string id = make_id();
+        total_bytes += bytes.size();
+        blobs.emplace(id, std::move(bytes));
+        order.push_back(id);
+        latest_id = id;
+        while (order.size() > MAX_CLIPS ||
+               (total_bytes > MAX_TOTAL_BYTES && order.size() > 1)) {
+            const std::string & old = order.front();
+            auto it = blobs.find(old);
+            if (it != blobs.end()) { total_bytes -= it->second.size(); blobs.erase(it); }
+            order.pop_front();
+        }
+        return id;
+    }
+    // Copy out the bytes for `id` (true if found).
+    bool get(const std::string & id, std::string & out) {
+        std::lock_guard<std::mutex> lk(mu);
+        auto it = blobs.find(id);
+        if (it == blobs.end()) return false;
+        out = it->second;
+        return true;
+    }
+    std::string newest() {
+        std::lock_guard<std::mutex> lk(mu);
+        return latest_id;
+    }
+
+  private:
+    static std::string make_id() {
+        static std::atomic<uint64_t> counter{0};
+        uint64_t a = (uint64_t) std::chrono::steady_clock::now().time_since_epoch().count();
+        uint64_t b = counter.fetch_add(1) * 0x9E3779B97F4A7C15ull + 0x1234567ull;
+        uint64_t x = a ^ (b << 1) ^ (a >> 7);
+        char buf[17];
+        for (int i = 15; i >= 0; --i) { buf[i] = "0123456789abcdef"[x & 0xF]; x >>= 4; }
+        buf[16] = 0;
+        return std::string(buf);
+    }
+};
+
+// ---------------------------------------------------------------------------
 // module state — exactly one session ("one slot")
 // ---------------------------------------------------------------------------
 struct WebcamAgent {
@@ -144,6 +205,12 @@ struct WebcamAgent {
     int                                  frame_size = 448;
 
     EventBroker                          broker;
+
+    // clip relay (step 3) + the most-recent raw frame JPEG (for the live page)
+    ClipStore                            clips;
+    std::mutex                           frame_mu;
+    std::string                          latest_frame_jpeg;   // raw JPEG bytes
+    std::atomic<int>                     latest_frame_no{0};
 };
 
 WebcamAgent g_wa;
@@ -420,6 +487,14 @@ server_http_res_ptr handle_frame(const server_http_req & req) {
         return json_res(400, json{{"error", "no JPEG bytes (send raw body or multipart file)"}});
     }
 
+    // Keep the most recent raw JPEG so the live page can show the latest frame
+    // (opaque relay — never decoded here).
+    {
+        std::lock_guard<std::mutex> lk(g_wa.frame_mu);
+        g_wa.latest_frame_jpeg.assign(jpeg.begin(), jpeg.end());
+        g_wa.latest_frame_no.store(g_wa.cur_frame.load() + 1);
+    }
+
     json out;
     run_joined_big_stack([&]() { process_frame_job(std::move(jpeg), out); });
     g_wa.busy.store(false);
@@ -470,12 +545,175 @@ server_http_res_ptr handle_stop(const server_http_req &) {
     return json_res(200, json{{"ok", true}});
 }
 
-server_http_res_ptr handle_not_implemented(const server_http_req &) {
-    // /agent/clip + /agent/live are step 3 (the 30s-buffer email attachment +
-    // live-link relay; the browser assembles the clip).
-    return json_res(501, json{
-        {"error", "not implemented yet"},
-        {"note", "clip/live (30s-buffer email attachment + live-link relay) is step 3"}});
+// ---------------------------------------------------------------------------
+// static asset helpers (UI embedded in the APE zip, served from /zip/)
+// ---------------------------------------------------------------------------
+bool read_zip_asset(const char * zip_path, std::string & out) {
+    FILE * f = fopen(zip_path, "rb");
+    if (!f) return false;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
+    long n = ftell(f);
+    if (n < 0) { fclose(f); return false; }
+    fseek(f, 0, SEEK_SET);
+    out.resize((size_t) n);
+    size_t rd = n ? fread(&out[0], 1, (size_t) n, f) : 0;
+    fclose(f);
+    out.resize(rd);
+    return true;
+}
+
+server_http_res_ptr serve_asset(const char * zip_path, const char * content_type) {
+    std::string body;
+    if (!read_zip_asset(zip_path, body)) {
+        return json_res(404, json{{"error", "embedded asset not found"}, {"path", zip_path}});
+    }
+    auto r = std::make_unique<server_http_res>();
+    r->status = 200;
+    r->content_type = content_type;
+    r->data = std::move(body);
+    return r;
+}
+
+server_http_res_ptr serve_bytes(std::string bytes, const char * content_type) {
+    auto r = std::make_unique<server_http_res>();
+    r->status = 200;
+    r->content_type = content_type;
+    r->data = std::move(bytes);
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// /agent/clip — the 30s-clip relay (opaque WebM bytes; NO server-side decode)
+//   POST /agent/clip          (raw WebM body)  -> {url, id, size}
+//   GET  /agent/clip/<id>     -> the stored WebM bytes (video/webm)
+//   GET  /agent/clip/latest   -> {url} of the most recently uploaded clip
+// ---------------------------------------------------------------------------
+server_http_res_ptr handle_clip_post(const server_http_req & req) {
+    std::string bytes;
+    if (!req.files.empty()) {
+        const uploaded_file & f = req.files.begin()->second;
+        bytes.assign(f.data.begin(), f.data.end());
+    } else {
+        bytes = req.body;
+    }
+    if (bytes.empty()) {
+        return json_res(400, json{{"error", "empty body (POST the assembled WebM blob)"}});
+    }
+    size_t sz = bytes.size();
+    std::string id = g_wa.clips.put(std::move(bytes));
+    std::string url = "/agent/clip/" + id + ".webm";
+    g_wa.broker.publish(json{{"type", "clip"}, {"url", url}, {"size", sz}}.dump());
+    return json_res(200, json{{"ok", true}, {"id", id}, {"url", url}, {"size", sz}});
+}
+
+server_http_res_ptr handle_clip_get(const server_http_req & req) {
+    std::string id = req.get_param("id");
+    // strip an optional .webm extension (the URL we hand out ends in .webm)
+    const std::string ext = ".webm";
+    if (id.size() > ext.size() && id.compare(id.size() - ext.size(), ext.size(), ext) == 0) {
+        id = id.substr(0, id.size() - ext.size());
+    }
+    if (id == "latest") {
+        std::string newest = g_wa.clips.newest();
+        if (newest.empty()) return json_res(404, json{{"error", "no clips stored yet"}});
+        return json_res(200, json{{"url", "/agent/clip/" + newest + ".webm"}, {"id", newest}});
+    }
+    std::string bytes;
+    if (!g_wa.clips.get(id, bytes)) {
+        return json_res(404, json{{"error", "no such clip"}, {"id", id}});
+    }
+    return serve_bytes(std::move(bytes), "video/webm");
+}
+
+// ---------------------------------------------------------------------------
+// /agent/live — a tiny live page: latest frame + the SSE action stream.
+// (Pure relay: the frame is the last opaque JPEG the browser sent; the agent's
+//  notes/speak/tool_calls arrive over /agent/events. Somewhere real for the
+//  "live link" in an email to point.)
+//   GET /agent/live            -> the live HTML page
+//   GET /agent/live/frame.jpg  -> the latest raw frame JPEG (or 404)
+// ---------------------------------------------------------------------------
+const char * kLivePage = R"HTML(<!doctype html>
+<html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>llamafile webcam — live</title>
+<style>
+ :root{color-scheme:dark;font-family:ui-sans-serif,system-ui,sans-serif}
+ body{margin:0;background:#0b0d10;color:#e6e8eb;display:grid;grid-template-columns:1fr 360px;gap:12px;padding:12px;height:100vh;box-sizing:border-box}
+ .stage{background:#000;border-radius:10px;overflow:hidden;display:flex;align-items:center;justify-content:center}
+ img{max-width:100%;max-height:100%;object-fit:contain}
+ #log{overflow:auto;background:#0e1217;border:1px solid #222831;border-radius:8px;padding:8px;font:12px/1.5 ui-monospace,monospace}
+ .ev{margin-bottom:4px}.t{color:#5b6672}
+ .note{color:#9ab6e0}.speak{color:#c79bf0}.tool{color:#7fd1b9}.act{color:#e0b057}.err{color:#e06b6b}
+ h2{font:13px ui-sans-serif;color:#9aa4af;margin:0 0 6px}
+</style></head><body>
+<div class="stage"><img id="frame" alt="waiting for frames…"/></div>
+<div style="display:flex;flex-direction:column;gap:8px;min-width:0">
+ <h2>Live agent feed (relay — no server-side decode)</h2>
+ <div id="log"></div>
+</div>
+<script>
+const log=document.getElementById('log');
+const add=(c,m)=>{const d=document.createElement('div');d.className='ev '+c;
+ d.innerHTML='<span class="t">'+new Date().toLocaleTimeString()+'</span> '+m;log.prepend(d)};
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const img=document.getElementById('frame');
+setInterval(()=>{img.src='/agent/live/frame.jpg?t='+Date.now()},700);
+const es=new EventSource('/agent/events');
+es.onmessage=m=>{let e;try{e=JSON.parse(m.data)}catch{return}
+ if(e.type==='note')add('note','📝 '+esc(e.text));
+ else if(e.type==='speak')add('speak','🔊 '+esc(e.text));
+ else if(e.type==='tool_call')add('tool','🛠 '+esc(e.name)+' '+esc(JSON.stringify(e.arguments||{})));
+ else if(e.type==='tool_result')add('tool','↳ '+esc(e.name)+' → '+esc(String(e.result)).slice(0,120));
+ else if(e.type==='frame')add('act','frame #'+e.frame+' → '+esc(e.action));
+ else if(e.type==='clip')add('act','clip ready: <a href="'+esc(e.url)+'" target="_blank">'+esc(e.url)+'</a>');
+ else if(e.type==='error')add('err',esc(e.message));};
+add('act','connected — polling latest frame + agent events');
+</script></body></html>)HTML";
+
+server_http_res_ptr handle_live(const server_http_req &) {
+    return serve_bytes(kLivePage, "text/html; charset=utf-8");
+}
+
+server_http_res_ptr handle_live_frame(const server_http_req &) {
+    std::string jpeg;
+    {
+        std::lock_guard<std::mutex> lk(g_wa.frame_mu);
+        jpeg = g_wa.latest_frame_jpeg;
+    }
+    if (jpeg.empty()) return json_res(404, json{{"error", "no frame yet"}});
+    return serve_bytes(std::move(jpeg), "image/jpeg");
+}
+
+// ---------------------------------------------------------------------------
+// /agent/tools — the MCP-connect/status panel feed (built-ins + bridged MCP)
+// ---------------------------------------------------------------------------
+server_http_res_ptr handle_tools(const server_http_req &) {
+    std::string mcp_prompt;
+    int mcp_count = 0;
+    run_joined_big_stack([&]() {
+        mcp_prompt = llamafile_mcp_tools_prompt();
+        mcp_count  = llamafile_mcp_server_count();
+    });
+    return json_res(200, json{
+        {"builtin_tools", json::array({"ignore_frame", "note", "speak"})},
+        {"mcp_servers", mcp_count},
+        {"mcp_tool_count", mcp_prompt.empty() ? 0 : 1},  // >0 iff any bridged tool
+        {"mcp_tools_prompt", mcp_prompt},
+        {"started", g_wa.started},
+    });
+}
+
+// ---------------------------------------------------------------------------
+// /agent/ui (+ /webcam alias) — the embedded webcam-agent web UI
+// ---------------------------------------------------------------------------
+server_http_res_ptr handle_ui_html(const server_http_req &) {
+    return serve_asset("/zip/llamafile/webcam_ui/webcam-agent.html",
+                       "text/html; charset=utf-8");
+}
+server_http_res_ptr handle_ui_js(const server_http_req &) {
+    return serve_asset("/zip/llamafile/webcam_ui/frame-selection.js",
+                       "text/javascript; charset=utf-8");
 }
 
 }  // namespace
@@ -496,6 +734,14 @@ void llamafile_webcam_register_routes(server_http_context & http,
     http.post("/agent/frame",  handle_frame);
     http.get ("/agent/events", handle_events);
     http.post("/agent/stop",   handle_stop);
-    http.post("/agent/clip",   handle_not_implemented);
-    http.post("/agent/live",   handle_not_implemented);
+
+    // step 3: clip relay (30s WebM email attachment), live link, embedded UI
+    http.post("/agent/clip",          handle_clip_post);
+    http.get ("/agent/clip/:id",      handle_clip_get);    // also /agent/clip/latest
+    http.get ("/agent/live",          handle_live);
+    http.get ("/agent/live/frame.jpg", handle_live_frame);
+    http.get ("/agent/tools",         handle_tools);
+    http.get ("/agent/ui",            handle_ui_html);
+    http.get ("/agent/ui/frame-selection.js", handle_ui_js);
+    http.get ("/webcam",              handle_ui_html);     // friendly alias
 }
