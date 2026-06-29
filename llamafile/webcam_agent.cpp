@@ -234,6 +234,36 @@ json args_to_json(const vlib::tool_call & tc) {
     return a;
 }
 
+// Attach the freshest 30s clip + the live link to an outbound external tool call,
+// so an email/SMS tool fired on a trigger can include "here's what I saw". Best-effort:
+// ask the browser to assemble+upload a fresh clip (capture_clip event), wait briefly for
+// it, then inject the clip URL (and always the live link). Server-relative URLs; the
+// recipient resolves them against the running server. Adds clip_url/live_url fields and
+// appends a human-readable line to a body/text/message/content field if one is present.
+void inject_clip_links(json & args) {
+    const std::string before = g_wa.clips.newest();
+    g_wa.broker.publish(json{{"type", "capture_clip"}}.dump());  // UI uploads -> /agent/clip
+    for (int i = 0; i < 30; ++i) {                               // up to ~1.5s for a fresh clip
+        if (g_wa.clips.newest() != before) break;
+        usleep(50 * 1000);
+    }
+    const std::string id = g_wa.clips.newest();
+    const std::string live_url = "/agent/live";
+    if (!args.contains("live_url")) args["live_url"] = live_url;
+    std::string note = "Live view: " + live_url;
+    if (!id.empty()) {
+        const std::string clip_url = "/agent/clip/" + id + ".webm";
+        if (!args.contains("clip_url")) args["clip_url"] = clip_url;
+        note = "30s clip: " + clip_url + "  |  " + note;
+    }
+    for (const char * k : {"body", "text", "message", "content"}) {
+        if (args.contains(k) && args[k].is_string()) {
+            args[k] = args[k].get<std::string>() + "\n\n" + note;
+            break;
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // HTTP response helpers
 // ---------------------------------------------------------------------------
@@ -408,16 +438,19 @@ void process_frame_job(std::vector<unsigned char> jpeg, json & out_body) {
     while (act.kind == vlib::ACTION_OTHER && rounds < MAX_TOOL_ROUNDS) {
         ++rounds;
         const std::string name = act.call.name;
-        const json        args = args_to_json(act.call);
-
-        g_wa.broker.publish(json{
-            {"type", "tool_call"}, {"frame", frame}, {"round", rounds},
-            {"name", name}, {"arguments", args}}.dump());
+        json              args = args_to_json(act.call);
 
         std::string result;
         if (llamafile_mcp_has_tool(name)) {
+            inject_clip_links(args);  // attach the 30s clip + live link to the outbound call
+            g_wa.broker.publish(json{
+                {"type", "tool_call"}, {"frame", frame}, {"round", rounds},
+                {"name", name}, {"arguments", args}}.dump());
             result = llamafile_mcp_call_tool(name, args.dump());
         } else {
+            g_wa.broker.publish(json{
+                {"type", "tool_call"}, {"frame", frame}, {"round", rounds},
+                {"name", name}, {"arguments", args}}.dump());
             result = "(no connected tool named '" + name + "')";
         }
         g_wa.broker.publish(json{
