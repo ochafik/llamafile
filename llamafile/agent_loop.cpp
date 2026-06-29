@@ -355,7 +355,7 @@ std::vector<RoleSpec> role_specs() {
             "an identical tool call. When you have the facts, stop calling tools and "
             "write a short factual summary that cites its source titles. Be concise.",
             {"wiki_search", "wiki_get_article", "wiki_*", "browser_*", "web_fetch", "code_run_js"},
-            6,
+            12,  // room for several search/read rounds before synthesizing
         },
         {
             "ideator", "task",
@@ -378,7 +378,7 @@ std::vector<RoleSpec> role_specs() {
             "note. Be concise; stop calling tools once you can judge.",
             {"wiki_search", "wiki_get_article", "wiki_*", "web_fetch",
              "read_file", "grep_search", "file_glob_search"},
-            6,
+            10,  // room to re-check several claims against sources
         },
     };
 }
