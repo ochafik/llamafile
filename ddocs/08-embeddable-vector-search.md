@@ -342,3 +342,17 @@ query
 - User prior art: `~/github/ai/graphs/` (`embed_parquet_llama_server.py`, `embed_wikidata.py`, `build_annoy.py`, `create_hnswlib.sql`, `bug_vss.sql`, `search_ddb.py`, `reduce_dimensionality.py`)
 </content>
 </invoke>
+
+---
+
+## DECISION (2026-06-29): FTS5 + LLM query-expansion is v1; embeddings DEFERRED
+Direction change (user): for v1, **don't ship embeddings/vector search** — instead let the **model be the semantic layer**: it generates query expansions (synonyms / alt phrasings / related entities) and issues **many parallel FTS5 queries OR'd together**; continuous batching + FTS5 ~0.1ms make this ~free, and it fits the agentic loop (search → inspect → refine → re-search).
+
+**Why:** removes the embedding-model dep, the ~8h embed-the-dump precompute, the vector index (sqlite-vec brute-force ceiling / usearch C++ build risk), and shrinks the artifact. FTS5 is already vendored in cosmo (`-DSQLITE_ENABLE_FTS5`), with boolean `OR`/phrase/prefix/`NEAR` + bm25.
+
+**Tradeoff (honest):** FTS5 is lexical — misses concepts with zero token overlap with *any* expansion term (dense embeddings catch those). Acceptable for entity/Wikipedia/Wikidata lookup (canonical names; the model can guess terms). → **embeddings = optional fallback tier**, added only if recall is insufficient on conceptual queries. When added: sqlite-vec (≤~1–5M) → usearch (scale), per the analysis above.
+
+**Implications:**
+- **Wikidata**: free — the SQLite store already has FTS5 on labels/aliases (ddoc 07). wiki­data_search accepts FTS5 boolean syntax; the agent issues parallel OR'd terms.
+- **Wikipedia (ZIM)**: currently title-prefix only. For full-text, build a small **FTS5 sidecar `.db` over the ZIM article text** (fast one-time index; dodges Xapian + embeddings). `wiki_search` then runs FTS5 over article bodies. (Title-prefix + LLM title-expansion may even suffice as a first cut.)
+- The `wiki_search`/`wikidata_search` MCP tools should pass through FTS5 query syntax (or expose a `terms[]`→OR helper) so the model can drive expansion + parallel search.
