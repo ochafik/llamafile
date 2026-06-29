@@ -365,7 +365,13 @@ wikidata_store * wikidata_open(const char * path) {
         "SELECT e.id, e.label, e.description "
         "FROM fts JOIN entity e ON e.rowid = fts.rowid "
         "WHERE fts MATCH ?1 "
-        "ORDER BY (lower(e.label) = lower(?2)) DESC, bm25(fts) "
+        // Rank: exact label first; then demote Wikimedia meta-pages (disambiguation/
+        // list/category/template), which share a real entity's label but aren't it;
+        // then prefer entities with more claims (the substantive one); then bm25.
+        "ORDER BY (lower(e.label) = lower(?2)) DESC, "
+        "         (e.description NOT LIKE '%Wikimedia%') DESC, "
+        "         length(e.claims) DESC, "
+        "         bm25(fts) "
         "LIMIT ?3";
 
     if (sqlite3_prepare_v2(db, sql_get, -1, &s->st_get, nullptr) != SQLITE_OK ||
