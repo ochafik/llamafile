@@ -236,6 +236,25 @@ std::string run_agent_impl(const std::string & system_prompt,
     log(who, "start", user_task);
 
     std::string last_text;
+    // Per-step trace appended to the result so the caller (and the user, via the chat
+    // tool-result view) can SEE what the sub-agent did — what it searched/read, not just
+    // its final blob. delegate_* otherwise runs opaque.
+    std::string steps;
+    auto preview = [](const std::string & s, size_t max) {
+        std::string out; bool ws = true;
+        for (char ch : s) {
+            unsigned char c = (unsigned char) ch;
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { if (!ws) { out.push_back(' '); ws = true; } }
+            else { out.push_back((char) c); ws = false; }
+            if (out.size() >= max) { out += "…"; break; }
+        }
+        while (!out.empty() && out.back() == ' ') out.pop_back();
+        return out;
+    };
+    auto finalize = [&](const std::string & answer) -> std::string {
+        if (steps.empty()) return answer;
+        return answer + "\n\n<details><summary>🔎 sub-agent steps</summary>\n\n" + steps + "</details>";
+    };
     for (int turn = 0; turn < max_turns; ++turn) {
         // Escalating turn-budget reminder so the agent wraps up instead of getting
         // cut off mid-research. (remaining counts this turn.)
@@ -263,7 +282,7 @@ std::string run_agent_impl(const std::string & system_prompt,
 
         if (tool_calls.empty()) {
             log(who, "final", content);
-            return content;
+            return finalize(content);
         }
         last_text = content;
 
@@ -313,12 +332,23 @@ std::string run_agent_impl(const std::string & system_prompt,
                 {"tool_call_id", call.value("id", "")},
                 {"content", results[i]},
             });
+            // one user-visible line per tool call: name `key-arg` -> result preview
+            const json & fn = call.value("function", json::object());
+            std::string tn = fn.value("name", "?");
+            std::string ar = fn.value("arguments", "");
+            json aj = json::parse(ar.empty() ? "{}" : ar, nullptr, false);
+            std::string ap;
+            if (aj.is_object())
+                for (auto & kv : aj.items())
+                    if (kv.value().is_string()) { ap = kv.value().get<std::string>(); break; }
+            steps += "- **" + tn + "**" + (ap.empty() ? "" : " `" + preview(ap, 60) + "`") +
+                     " → " + preview(results[i], 140) + "\n";
         }
     }
 
     log(who, "maxturns", "hit turn cap");
-    return last_text.empty() ? "(stopped: max turns reached)"
-                             : last_text + "\n\n(note: stopped at max turns)";
+    return finalize(last_text.empty() ? "(stopped: max turns reached)"
+                                      : last_text + "\n\n(note: stopped at max turns)");
 }
 
 }  // namespace
