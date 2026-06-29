@@ -328,8 +328,58 @@ bool zim_load_path_ptrs(zim_archive *archive) {
     return true;
 }
 
+// Load the title order from the modern X/listing/titleOrdered/v{1,0} entry.
+// This is a blob holding a little-endian uint32 array of entry indices in
+// title order. Used when the header title-pointer list is absent (which is the
+// case for current "nons" Wikipedia ZIMs, where title_ptr_pos is UINT64_MAX).
+static bool zim_load_title_listing(zim_archive *archive) {
+    zim_entry e;
+    if (!zim_get_entry_by_path(archive, "X/listing/titleOrdered/v1", &e) &&
+        !zim_get_entry_by_path(archive, "X/listing/titleOrdered/v0", &e)) {
+        zim_set_error("no title index: header title list absent and no "
+                      "X/listing/titleOrdered/v{1,0} entry");
+        return false;
+    }
+    if (e.is_redirect && !zim_resolve_redirect(archive, &e)) {
+        return false;
+    }
+
+    size_t blob_size = 0;
+    void *blob = zim_get_content(archive, &e, &blob_size);
+    if (!blob) {
+        return false;  // error already set
+    }
+
+    size_t count = blob_size / sizeof(uint32_t);
+    archive->title_ptrs = malloc(count ? count * sizeof(uint32_t) : 1);
+    if (!archive->title_ptrs) {
+        zim_free(blob);
+        zim_set_error("out of memory for title listing");
+        return false;
+    }
+    // The on-disk listing is little-endian uint32, matching the in-memory
+    // representation on the platforms cosmocc targets.
+    memcpy(archive->title_ptrs, blob, count * sizeof(uint32_t));
+    archive->title_ptr_count = (uint32_t)count;
+    zim_free(blob);
+    return true;
+}
+
 bool zim_load_title_ptrs(zim_archive *archive) {
     if (archive->title_ptrs) return true;
+
+    // The header title-pointer list is present and usable only when its
+    // position points inside the file and the whole array fits. Modern ZIMs set
+    // title_ptr_pos to UINT64_MAX (no header title list) -> use the listing.
+    uint64_t pos = archive->header.title_ptr_pos;
+    uint64_t need = (uint64_t)archive->header.entry_count * sizeof(uint32_t);
+    bool header_ok = pos != 0 && pos != UINT64_MAX &&
+                     pos < archive->file_size &&
+                     pos + need <= archive->file_size;
+
+    if (!header_ok) {
+        return zim_load_title_listing(archive);
+    }
 
     size_t count = archive->header.entry_count;
     size_t size = count * sizeof(uint32_t);
@@ -340,12 +390,12 @@ bool zim_load_title_ptrs(zim_archive *archive) {
         return false;
     }
 
-    if (!zim_read_at(archive, archive->header.title_ptr_pos,
-                     archive->title_ptrs, size)) {
+    if (!zim_read_at(archive, pos, archive->title_ptrs, size)) {
         free(archive->title_ptrs);
         archive->title_ptrs = NULL;
         return false;
     }
+    archive->title_ptr_count = (uint32_t)count;
 
     return true;
 }

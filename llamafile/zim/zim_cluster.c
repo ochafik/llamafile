@@ -98,36 +98,93 @@ static bool zim_decompress_zlib(const uint8_t *src, size_t src_size,
 
 static bool zim_decompress_zstd(const uint8_t *src, size_t src_size,
                                 uint8_t **dst, size_t *dst_size) {
-    // Get decompressed size
     unsigned long long frame_size = ZSTD_getFrameContentSize(src, src_size);
-    if (frame_size == ZSTD_CONTENTSIZE_UNKNOWN) {
-        // Unknown size - use streaming or estimate
-        frame_size = src_size * 4;
-    } else if (frame_size == ZSTD_CONTENTSIZE_ERROR) {
+    if (frame_size == ZSTD_CONTENTSIZE_ERROR) {
         zim_set_error("invalid zstd frame");
         return false;
     }
 
-    if (frame_size > ZIM_MAX_CLUSTER_SIZE) {
-        zim_set_error("cluster exceeds maximum size");
-        return false;
+    // Fast path: the frame embeds a known, sane decompressed size -> one shot.
+    if (frame_size != ZSTD_CONTENTSIZE_UNKNOWN) {
+        if (frame_size > ZIM_MAX_CLUSTER_SIZE) {
+            zim_set_error("cluster exceeds maximum size");
+            return false;
+        }
+        uint8_t *out = malloc(frame_size ? (size_t)frame_size : 1);
+        if (!out) {
+            zim_set_error("out of memory for zstd decompression");
+            return false;
+        }
+        size_t result = ZSTD_decompress(out, (size_t)frame_size, src, src_size);
+        if (ZSTD_isError(result)) {
+            zim_set_error("zstd decompress failed: %s", ZSTD_getErrorName(result));
+            free(out);
+            return false;
+        }
+        *dst = out;
+        *dst_size = result;
+        return true;
     }
 
-    uint8_t *out = malloc(frame_size);
+    // Real Wikipedia ZIMs write clusters with an UNKNOWN frame content size
+    // (the writer streams blobs into the frame), so a fixed size estimate is
+    // unreliable and a too-small estimate makes ZSTD_decompress fail outright.
+    // Stream-decompress instead, growing the output buffer as needed.
+    ZSTD_DStream *ds = ZSTD_createDStream();
+    if (!ds) {
+        zim_set_error("out of memory for zstd stream");
+        return false;
+    }
+    ZSTD_initDStream(ds);
+
+    size_t cap = src_size * 4;
+    if (cap < 65536) cap = 65536;
+    if (cap > ZIM_MAX_CLUSTER_SIZE) cap = ZIM_MAX_CLUSTER_SIZE;
+    uint8_t *out = malloc(cap);
     if (!out) {
+        ZSTD_freeDStream(ds);
         zim_set_error("out of memory for zstd decompression");
         return false;
     }
 
-    size_t result = ZSTD_decompress(out, frame_size, src, src_size);
-    if (ZSTD_isError(result)) {
-        zim_set_error("zstd decompress failed: %s", ZSTD_getErrorName(result));
-        free(out);
-        return false;
+    ZSTD_inBuffer in = { src, src_size, 0 };
+    size_t produced = 0;
+    for (;;) {
+        if (produced == cap) {
+            size_t new_cap = cap * 2;
+            if (new_cap > ZIM_MAX_CLUSTER_SIZE) new_cap = ZIM_MAX_CLUSTER_SIZE;
+            if (new_cap == cap) {
+                zim_set_error("cluster exceeds maximum size");
+                free(out);
+                ZSTD_freeDStream(ds);
+                return false;
+            }
+            uint8_t *new_out = realloc(out, new_cap);
+            if (!new_out) {
+                zim_set_error("out of memory expanding zstd buffer");
+                free(out);
+                ZSTD_freeDStream(ds);
+                return false;
+            }
+            out = new_out;
+            cap = new_cap;
+        }
+        ZSTD_outBuffer ob = { out, cap, produced };
+        size_t ret = ZSTD_decompressStream(ds, &ob, &in);
+        if (ZSTD_isError(ret)) {
+            zim_set_error("zstd decompress failed: %s", ZSTD_getErrorName(ret));
+            free(out);
+            ZSTD_freeDStream(ds);
+            return false;
+        }
+        produced = ob.pos;
+        if (ret == 0) break;               // frame fully decoded
+        if (in.pos == in.size && ob.pos < cap) break;  // input drained
     }
+    ZSTD_freeDStream(ds);
 
     *dst = out;
-    *dst_size = result;
+    *dst_size = produced;
     return true;
 }
 

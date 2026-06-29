@@ -99,29 +99,44 @@ static float calculate_score(const char *title, const char *query) {
 // Title index navigation (P1 fix + O(log n) search)
 // -----------------------------------------------------------------
 //
-// The ZIM header title-pointer list is ordered by (namespace, title), NOT
-// globally by title; within a single namespace the entries are sorted by title
-// using a plain byte-wise (case-sensitive) comparison. So the search is two
-// binary searches:
+// `archive->title_ptrs` is an array of entry indices in title order, of length
+// `archive->title_ptr_count` (see zim_load_title_ptrs). Its source depends on
+// the ZIM generation:
+//
+//   * old / "withns" ZIMs: the header title-pointer list, ordered by
+//     (namespace, title). Content lives in namespace 'A'.
+//   * modern / "nons" Wikipedia ZIMs: the header list is ABSENT
+//     (title_ptr_pos == UINT64_MAX), so we read the dedicated article title
+//     index X/listing/titleOrdered/v1 — a list of article entry indices in
+//     title order, all in the content namespace 'C'.
+//
+// Either way the search is two binary searches:
 //
 //   1. find the content-namespace sub-range [start, end) of `title_ptrs`
-//      (single-byte namespace comparison — collation-independent, reliable);
+//      (single-byte namespace comparison — collation-independent, reliable;
+//      for the v1 listing the whole array is already content 'C');
 //   2. binary-search titles within that sub-range to land on a prefix, then
 //      walk forward over the (few) matching titles.
 //
-// Both are O(log n). Content lives in namespace 'C' (new/"nons" ZIMs) or 'A'
-// (old/"withns" ZIMs); metadata ('M'), well-known ('W') and the Xapian index
-// ('X') are excluded by construction.
+// Both are O(log n).
 //
-// Note on case: the on-disk order is case-sensitive byte order, but queries
-// should match case-insensitively. We bridge this by probing a small set of
-// first-character case variants of the prefix (as-typed, upper-first,
-// lower-first) — this covers the dominant Wikipedia title convention
-// ("eiffel" -> "Eiffel"). A query whose case differs from the title past the
-// first character (rare) may be missed by the binary path; for fully
-// case/locale-insensitive search the robust source is the ZIM's
-// X/listing/titleOrdered/v1 article index or the Xapian 'X' full-text index
-// (not used here to avoid the libxapian/ICU dependency).
+// Note on case/collation: the binary search compares titles byte-wise. Modern
+// libzim writes the v1 listing in byte order for ASCII titles (verified: 0
+// inversions on the Simple-English ZIM), but a fully Unicode/ICU-collated index
+// can place a matching title slightly out of byte order. To tolerate that drift
+// without pulling in libicu we (a) probe a few first-character case variants of
+// the query (as-typed / upper-first / lower-first — covers "eiffel"->"Eiffel"),
+// and (b) scan a bounded window before the binary-search landing point and
+// past the first non-matching titles (TITLE_SCAN_WINDOW) rather than stopping
+// at the first miss. Limitation: a query whose case differs past the first
+// character, or a target displaced further than the window by ICU collation,
+// may still be missed; the fully robust source would be the Xapian 'X'
+// full-text index (avoided here to skip the libxapian/ICU dependency).
+
+// How far (in entries) to scan before the binary-search landing point and how
+// many consecutive non-matching titles to tolerate past it, to absorb
+// byte-vs-ICU collation drift. Bounded so search stays fast.
+#define TITLE_SCAN_WINDOW 64
 
 // Namespace byte of the entry referenced by title_ptrs[i] (0 on failure,
 // which sorts before any real namespace so it never widens a match range).
@@ -135,7 +150,7 @@ static uint8_t title_ptr_ns(zim_archive *archive, uint32_t i) {
 
 // First index in title_ptrs whose namespace byte is >= ns.
 static uint32_t title_ns_lower_bound(zim_archive *archive, uint8_t ns) {
-    uint32_t lo = 0, hi = archive->header.entry_count;
+    uint32_t lo = 0, hi = archive->title_ptr_count;
     while (lo < hi) {
         uint32_t mid = lo + (hi - lo) / 2;
         if (title_ptr_ns(archive, mid) < ns) {
@@ -162,7 +177,7 @@ static uint8_t zim_content_ns_range(zim_archive *archive,
             return ns;
         }
     }
-    *start = *end = archive->header.entry_count;
+    *start = *end = archive->title_ptr_count;
     return 0;
 }
 
@@ -206,7 +221,7 @@ uint32_t zim_find_title_prefix(zim_archive *archive, const char *prefix) {
     uint32_t start, end;
     zim_content_ns_range(archive, &start, &end);
     if (start >= end) {
-        return archive->header.entry_count;  // no content entries
+        return archive->title_ptr_count;  // no content entries
     }
     return title_lower_bound(archive, start, end, prefix);
 }
@@ -290,7 +305,11 @@ int zim_search(zim_archive *archive, const char *query,
 
     for (int p = 0; p < nprobes && temp_count < cap; p++) {
         const char *prefix = probes[p];
-        uint32_t i = title_lower_bound(archive, start, end, prefix);
+        size_t prefix_len = strlen(prefix);
+        uint32_t lb = title_lower_bound(archive, start, end, prefix);
+        // Begin a window before the landing point to absorb collation drift.
+        uint32_t i = lb > start + TITLE_SCAN_WINDOW ? lb - TITLE_SCAN_WINDOW : start;
+        int misses = 0;  // consecutive non-matches once we're at/after lb
         for (; i < end && temp_count < cap; i++) {
             zim_entry entry;
             if (!zim_get_entry_by_index(archive, archive->title_ptrs[i], &entry)) {
@@ -299,11 +318,15 @@ int zim_search(zim_archive *archive, const char *query,
             if (entry.namespace_ != content_ns) {
                 break; // left the content namespace
             }
-            // Stop once titles no longer share this (case-sensitive) prefix:
-            // the sub-range is sorted, so there can be no further matches.
-            if (strncmp(entry.title, prefix, strlen(prefix)) != 0) {
-                break;
+            // Past the landing point, give up only after a run of misses (the
+            // window tolerates a matching title sitting just out of byte order).
+            if (strncmp(entry.title, prefix, prefix_len) != 0) {
+                if (i >= lb && ++misses > TITLE_SCAN_WINDOW) {
+                    break;
+                }
+                continue;
             }
+            misses = 0;
 
             float score = calculate_score(entry.title, query);
             if (score < 0.1f) {
@@ -378,7 +401,10 @@ int zim_suggest(zim_archive *archive, const char *prefix,
     int count = 0;
     for (int p = 0; p < nprobes && count < max_results; p++) {
         const char *pfx = probes[p];
-        uint32_t i = title_lower_bound(archive, start, end, pfx);
+        size_t pfx_len = strlen(pfx);
+        uint32_t lb = title_lower_bound(archive, start, end, pfx);
+        uint32_t i = lb > start + TITLE_SCAN_WINDOW ? lb - TITLE_SCAN_WINDOW : start;
+        int misses = 0;
         for (; i < end && count < max_results; i++) {
             zim_entry entry;
             if (!zim_get_entry_by_index(archive, archive->title_ptrs[i], &entry)) {
@@ -387,9 +413,13 @@ int zim_suggest(zim_archive *archive, const char *prefix,
             if (entry.namespace_ != content_ns) {
                 break;
             }
-            if (strncmp(entry.title, pfx, strlen(pfx)) != 0) {
-                break;
+            if (strncmp(entry.title, pfx, pfx_len) != 0) {
+                if (i >= lb && ++misses > TITLE_SCAN_WINDOW) {
+                    break;
+                }
+                continue;
             }
+            misses = 0;
             if (entry.is_redirect) {
                 continue;
             }

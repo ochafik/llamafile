@@ -110,8 +110,11 @@ struct zim_archive {
     uint64_t *path_ptrs;              // Array of entry offsets
     bool path_ptrs_mmaped;
 
-    // Title pointer cache
+    // Title pointer cache: array of entry indices in title order. Sourced from
+    // the header title-pointer list (old/withns ZIMs) or, when that list is
+    // absent (modern nons Wikipedia ZIMs), from X/listing/titleOrdered/v1.
     uint32_t *title_ptrs;             // Array of entry indices (sorted by title)
+    uint32_t title_ptr_count;        // Number of valid entries in title_ptrs
     bool title_ptrs_mmaped;
 
     // Cluster pointer cache
