@@ -427,6 +427,8 @@ void Runtime::run_cycle(Agent * a) {
                 break;
             case TurnOutcome::PARK:
                 a->status = Status::WAITING;
+                a->await.kind         = out.timer_park ? PendingAwait::Kind::TIMER
+                                                       : PendingAwait::Kind::AWAIT;
                 a->await.active       = true;
                 a->await.tool_call_id = out.await_call_id;
                 a->await.wait_ids     = out.wait_ids;
@@ -452,7 +454,7 @@ void Runtime::run_cycle(Agent * a) {
         }
     }
 
-    if (out.kind == TurnOutcome::PARK) {
+    if (out.kind == TurnOutcome::PARK && !out.timer_park) {
         trace(json{{"type", "await"}, {"agent_id", a->id}, {"parent_id", a->parent_id},
                    {"wait_ids", out.wait_ids}, {"timeout", out.timeout_s}});
     }
@@ -479,11 +481,16 @@ void Runtime::sweeper_loop() {
     while (running_.load()) {
         {
             std::unique_lock<std::mutex> lk(q_mu_);
-            q_cv_.wait_for(lk, milliseconds(250), [&]() { return !running_.load(); });
+            // 50 ms granularity keeps timer wakes (wait/poll/schedule + await
+            // timeouts) responsive enough for sub-second jobs without busy-spin.
+            q_cv_.wait_for(lk, milliseconds(50), [&]() { return !running_.load(); });
         }
         if (!running_.load()) break;
         double t = steady_seconds();
+
+        // --- park deadlines: AWAIT timeouts + TIMER (wait/poll) wakeups ---
         std::vector<std::string> wake;
+        std::vector<bool>        wake_is_timer;
         {
             std::lock_guard<std::mutex> al(agents_mu_);
             for (const auto & id : order_) {
@@ -496,14 +503,98 @@ void Runtime::sweeper_loop() {
                     a->await.timed_out = true;
                     a->status = Status::RUNNABLE; a->enqueued = true;
                     wake.push_back(id);
+                    wake_is_timer.push_back(a->await.kind == PendingAwait::Kind::TIMER);
                 }
             }
         }
-        for (const auto & id : wake) {
-            trace(json{{"type", "await_timeout"}, {"agent_id", id}});
-            enqueue(id);
+        for (size_t i = 0; i < wake.size(); ++i) {
+            trace(json{{"type", wake_is_timer[i] ? "timer_fire" : "await_timeout"},
+                       {"agent_id", wake[i]}});
+            enqueue(wake[i]);
+        }
+
+        // --- scheduled jobs (schedule() tool): fire + re-arm repeats ---
+        std::vector<ScheduledJob> due;
+        {
+            std::lock_guard<std::mutex> lk(jobs_mu_);
+            for (auto & j : jobs_) {
+                if (!j.active || t < j.next_fire) continue;
+                due.push_back(j);                  // snapshot pre-mutation
+                if (j.interval > 0 && j.remaining > 1) {
+                    j.remaining -= 1;
+                    j.next_fire  = t + j.interval;
+                } else {
+                    j.active = false;
+                }
+            }
+        }
+        for (const auto & j : due) {
+            trace(json{{"type", "timer_fire"}, {"job", j.id}, {"from", j.from},
+                       {"to", j.to}, {"repeat", j.interval > 0}});
+            std::string e;
+            send(j.from, j.to, j.content, e);      // routes + wakes the target
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// timer service: schedule() jobs
+// ---------------------------------------------------------------------------
+std::string Runtime::schedule_job(const std::string & from, const std::string & to,
+                                  const std::string & content,
+                                  double delay_s, double interval_s, int count,
+                                  std::string & err) {
+    if (delay_s < 0) delay_s = 0;
+    if (delay_s > guards_.max_poll_timeout_s) delay_s = guards_.max_poll_timeout_s;
+    if (interval_s < 0) interval_s = 0;
+    if (interval_s > 0 && interval_s < 0.001) interval_s = 0.001;  // avoid storms
+    if (interval_s > guards_.max_poll_timeout_s) interval_s = guards_.max_poll_timeout_s;
+
+    {
+        std::lock_guard<std::mutex> lk(agents_mu_);
+        if (!find_locked(to)) { err = "schedule refused: no agent '" + to + "'"; return ""; }
+    }
+
+    int remaining = 1;
+    if (interval_s > 0) {
+        remaining = count > 0 ? count : 1;
+        if (remaining > guards_.max_poll_iterations) remaining = guards_.max_poll_iterations;
+    }
+
+    ScheduledJob j;
+    j.id        = make_id("j_");
+    j.from      = from;
+    j.to        = to;
+    j.content   = content;
+    j.next_fire = steady_seconds() + delay_s;
+    j.interval  = interval_s;
+    j.remaining = remaining;
+    j.active    = true;
+
+    std::string id = j.id;
+    {
+        std::lock_guard<std::mutex> lk(jobs_mu_);
+        int active = 0;
+        for (const auto & e : jobs_) if (e.active) ++active;
+        if (active >= guards_.max_scheduled_jobs) {
+            err = "schedule refused: max scheduled jobs ("
+                  + std::to_string(guards_.max_scheduled_jobs) + ") reached";
+            return "";
+        }
+        jobs_.push_back(j);
+    }
+
+    trace(json{{"type", "schedule"}, {"job", id}, {"from", from}, {"to", to},
+               {"delay_s", delay_s}, {"interval_s", interval_s},
+               {"count", remaining}, {"content", content.substr(0, 200)}});
+    return id;
+}
+
+int Runtime::scheduled_job_count() const {
+    std::lock_guard<std::mutex> lk(jobs_mu_);
+    int n = 0;
+    for (const auto & j : jobs_) if (j.active) ++n;
+    return n;
 }
 
 }  // namespace agentrt

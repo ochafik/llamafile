@@ -30,11 +30,13 @@ echo "########################################################"
     "${MODE_DIR}/tests/wikidata_test" \
     "${MODE_DIR}/tests/path_jail_test" \
     "${MODE_DIR}/tests/agent_runtime_test" \
+    "${MODE_DIR}/tests/agent_runtime_sched_test" \
     "${MODE_DIR}/tests/agent_runtime_mesh_demo"
 "${MODE_DIR}/tests/zim_reader_test"
 "${MODE_DIR}/tests/wikidata_test"
 "${MODE_DIR}/tests/path_jail_test"
 "${MODE_DIR}/tests/agent_runtime_test"
+"${MODE_DIR}/tests/agent_runtime_sched_test"
 "${MODE_DIR}/tests/agent_runtime_mesh_demo"
 
 echo

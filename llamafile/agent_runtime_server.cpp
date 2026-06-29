@@ -30,6 +30,7 @@
 // See ddocs/09-interactive-multiagent-runtime.md (Phase 1 = section 9.1).
 
 #include "agent_runtime.h"
+#include "agent_predicate.h"  // poll_until predicate language
 
 #include "server-tools.h"   // server_tool, server_tools
 #include "server-http.h"    // server_http_context, server_http_req/res
@@ -53,6 +54,7 @@ using agentrt::Agent;
 using agentrt::Message;
 using agentrt::TurnOutcome;
 using agentrt::Guards;
+using agentrt::PendingAwait;
 using json = nlohmann::ordered_json;
 
 namespace {
@@ -77,7 +79,8 @@ thread_local Runtime * t_rt    = nullptr;
 thread_local Agent   * t_agent = nullptr;
 
 bool is_runtime_tool(const std::string & n) {
-    return n == "spawn_agent" || n == "send_message" || n == "await" || n == "list_agents";
+    return n == "spawn_agent" || n == "send_message" || n == "await" ||
+           n == "list_agents" || n == "wait" || n == "poll_until" || n == "schedule";
 }
 
 // HTTP worker stacks are tiny under cosmocc; json + Runtime work overflows them.
@@ -176,7 +179,8 @@ struct Role { std::string system; std::vector<std::string> allow; };
 Role role_for(const std::string & role) {
     static const std::vector<std::string> research_tools =
         {"wiki_search", "wiki_get_article", "wiki_*", "wikidata_*",
-         "browser_*", "web_fetch", "send_message", "list_agents"};
+         "browser_*", "web_fetch", "send_message", "list_agents",
+         "wait", "poll_until", "schedule"};
     if (role == "researcher")
         return {"You are a RESEARCHER sub-agent. Use the available tools "
                 "(wiki_search, wiki_get_article, wikidata_*) to gather facts that "
@@ -295,6 +299,88 @@ struct ListAgentsTool : server_tool {
     }
 };
 
+// --- scheduling tools (Phase 2, ddoc 09 §7) -------------------------------
+// wait + poll_until are PARK tools: the turn loop intercepts them to suspend the
+// agent on the timer (it holds NO worker while parked) and resumes it later, so
+// invoke() is never reached for real work.
+struct WaitTool : server_tool {
+    WaitTool() { name = "wait"; display_name = name; permission_write = false; }
+    json get_definition() override {
+        return {{"type", "function"}, {"function", json{
+            {"name", name},
+            {"description", "Pause YOURSELF for N seconds, then resume. You yield your "
+                            "slot while waiting (you hold no worker). Use for backoff "
+                            "between checks. Capped by the runtime."},
+            {"parameters", json{{"type", "object"}, {"properties", json{
+                {"seconds", json{{"type", "number"}, {"description", "seconds to wait"}}},
+            }}, {"required", json::array({"seconds"})}}}}}};
+    }
+    json invoke(json) override { return {{"error", "wait handled by the scheduler"}}; }
+};
+
+struct PollUntilTool : server_tool {
+    PollUntilTool() { name = "poll_until"; display_name = name; permission_write = false; }
+    json get_definition() override {
+        return {{"type", "function"}, {"function", json{
+            {"name", name},
+            {"description",
+             "Periodically call another tool until its result satisfies a predicate "
+             "(or a timeout). You yield your slot between checks (no busy-wait). The "
+             "predicate is one of: {\"contains\":\"x\"}, {\"regex\":\"re\"}, "
+             "{\"equals\":\"x\"}, or {\"json_path\":\".a.b\", \"equals|contains|regex\":..}. "
+             "Returns the matched value, or a timeout marker."},
+            {"parameters", json{{"type", "object"}, {"properties", json{
+                {"tool", json{{"type", "string"}, {"description", "tool name to poll"}}},
+                {"args", json{{"type", "object"}, {"description", "arguments passed to that tool"}}},
+                {"predicate", json{{"type", "object"}, {"description", "match spec (see description)"}}},
+                {"interval_s", json{{"type", "number"}, {"description", "seconds between checks (default 1)"}}},
+                {"timeout_s", json{{"type", "number"}, {"description", "give up after this many seconds (default 30)"}}},
+                {"max_iterations", json{{"type", "integer"}, {"description", "max checks (capped)"}}},
+            }}, {"required", json::array({"tool", "predicate"})}}}}}};
+    }
+    json invoke(json) override { return {{"error", "poll_until handled by the scheduler"}}; }
+};
+
+struct ScheduleTool : server_tool {
+    ScheduleTool() { name = "schedule"; display_name = name; permission_write = true; }
+    json get_definition() override {
+        return {{"type", "function"}, {"function", json{
+            {"name", name},
+            {"description",
+             "Schedule a message to be delivered to an agent's mailbox LATER (a "
+             "wake-on-timer). NON-BLOCKING: returns a job id immediately and you "
+             "keep going. Set 'to' (default: yourself), 'message', 'delay_s'. For a "
+             "repeating timer set 'interval_s' (+ optional 'count'). Bounded by the "
+             "runtime (max jobs / horizon)."},
+            {"parameters", json{{"type", "object"}, {"properties", json{
+                {"to", json{{"type", "string"}, {"description", "target agent id/name (default: self)"}}},
+                {"message", json{{"type", "string"}, {"description", "message body to deliver"}}},
+                {"delay_s", json{{"type", "number"}, {"description", "seconds until the first delivery"}}},
+                {"interval_s", json{{"type", "number"}, {"description", "repeat period (omit for one-shot)"}}},
+                {"count", json{{"type", "integer"}, {"description", "number of repeats (default 1)"}}},
+            }}, {"required", json::array({"message"})}}}}}};
+    }
+    json invoke(json p) override {
+        if (!t_rt || !t_agent) return {{"error", "schedule is only callable inside an agent runtime turn"}};
+        std::string to      = str_arg(p, {"to", "target", "agent"});
+        if (to.empty()) to = t_agent->id;            // default: deliver to self
+        std::string content = str_arg(p, {"message", "content", "task", "text"});
+        if (content.empty()) return {{"error", "schedule requires a 'message'"}};
+        double delay    = (p.is_object() && p.contains("delay_s")    && p["delay_s"].is_number())    ? p["delay_s"].get<double>()    : 0.0;
+        double interval = (p.is_object() && p.contains("interval_s") && p["interval_s"].is_number()) ? p["interval_s"].get<double>() : 0.0;
+        int    count    = (p.is_object() && p.contains("count")      && p["count"].is_number_integer()) ? p["count"].get<int>()     : 0;
+        std::string err;
+        std::string jid = t_rt->schedule_job(t_agent->id, to, content, delay, interval, count, err);
+        if (jid.empty()) return {{"error", err}};
+        char buf[64];
+        snprintf(buf, sizeof buf, "%.3g", delay);
+        return {{"plain_text_response",
+                 "scheduled job " + jid + " -> " + to + " in " + std::string(buf) + "s"
+                 + (interval > 0 ? " (repeating)" : "")},
+                {"job_id", jid}};
+    }
+};
+
 // ---------------------------------------------------------------------------
 // the default TurnFn — an agent's scheduled cycle
 // ---------------------------------------------------------------------------
@@ -320,11 +406,87 @@ std::vector<std::string> resolve_await_ids(Runtime & rt, Agent & a, const json &
     return ids;
 }
 
-TurnOutcome default_turn(Runtime & rt, Agent & a, std::vector<Message> & inbox) {
-    // 1. resume-from-await OR inject delivered messages as user turns
-    {
+// Advance one poll_until step: check the overall timeout/iteration caps, invoke
+// the polled tool once, test the predicate. On a satisfied predicate / timeout /
+// cap it appends the parked tool's result to the conversation, clears the park
+// state, and returns true (the turn loop continues). Otherwise it persists the
+// updated poll state and fills `out` with a TIMER PARK for the next interval,
+// returning false (the agent yields its worker until the timer fires again).
+bool poll_advance(Runtime & rt, Agent & a, json & pstate,
+                  const std::string & call_id, TurnOutcome & out) {
+    double      now       = agentrt::steady_seconds();
+    int         iters     = pstate.value("iters", 0);
+    double      deadline  = pstate.value("deadline", 0.0);
+    int         max_iters = pstate.value("max_iters", 0);
+    double      interval  = pstate.value("interval", 1.0);
+    std::string tool      = pstate.value("tool", std::string());
+    json        args      = pstate.contains("args")      ? pstate["args"]      : json::object();
+    json        pred      = pstate.contains("predicate") ? pstate["predicate"] : json::object();
+
+    auto resolve = [&](const json & content) {
         std::lock_guard<std::mutex> lk(a.mu);
-        if (a.await.active) {
+        a.conversation.push_back({{"role", "tool"}, {"tool_call_id", call_id}, {"content", content.dump()}});
+        a.await.active = false;
+        a.park_state   = json::object();
+    };
+
+    // overall timeout / iteration cap reached -> give up (no deadlock)
+    if ((deadline > 0 && now >= deadline) || (max_iters > 0 && iters >= max_iters)) {
+        resolve(json{{"poll", "timeout"}, {"tool", tool}, {"iterations", iters}});
+        rt.trace(json{{"type", "poll"}, {"agent_id", a.id}, {"event", "timeout"},
+                      {"tool", tool}, {"iterations", iters}});
+        return true;
+    }
+
+    // invoke the polled tool once (in-process, this worker stack)
+    json result;
+    if (g_registry && !tool.empty()) {
+        t_rt = &rt; t_agent = &a;
+        try { result = g_registry->invoke(tool, args); }
+        catch (const std::exception & e) { result = json{{"error", std::string("tool error: ") + e.what()}}; }
+        t_rt = nullptr; t_agent = nullptr;
+    } else {
+        result = json{{"error", tool.empty() ? "poll_until: no tool" : "no tool registry"}};
+    }
+    std::string rstr = result.is_string() ? result.get<std::string>() : result.dump();
+    ++iters;
+
+    agentrt::PredResult pr = agentrt::predicate_match(pred, rstr);
+    rt.trace(json{{"type", "poll"}, {"agent_id", a.id},
+                  {"event", pr.matched ? "match" : "check"},
+                  {"tool", tool}, {"iteration", iters}});
+
+    if (pr.matched) {
+        resolve(json{{"poll", "matched"}, {"value", pr.value}, {"iterations", iters},
+                     {"result", rstr.substr(0, 400)}});
+        return true;
+    }
+
+    // not satisfied -> persist progress and re-park for another interval
+    pstate["iters"] = iters;
+    { std::lock_guard<std::mutex> lk(a.mu); a.park_state = pstate; }
+    out.kind          = TurnOutcome::PARK;
+    out.timer_park    = true;
+    out.await_call_id = call_id;
+    out.timeout_s     = interval;
+    return false;
+}
+
+TurnOutcome default_turn(Runtime & rt, Agent & a, std::vector<Message> & inbox) {
+    // 1. resume from a park (append the parked tool's result), THEN inject any
+    //    delivered messages as user turns (after the tool result, so the
+    //    assistant(tool_calls)->tool ordering invariant holds).
+    {
+        PendingAwait::Kind kind = PendingAwait::Kind::AWAIT;
+        bool   active   = false;
+        std::string call_id;
+        json   pstate;
+        { std::lock_guard<std::mutex> lk(a.mu);
+          active = a.await.active; kind = a.await.kind;
+          call_id = a.await.tool_call_id; pstate = a.park_state; }
+
+        if (active && kind == PendingAwait::Kind::AWAIT) {
+            std::lock_guard<std::mutex> lk(a.mu);
             json results = json::object();
             for (const auto & id : a.await.wait_ids) {
                 auto it = a.await.collected.find(id);
@@ -340,11 +502,35 @@ TurnOutcome default_turn(Runtime & rt, Agent & a, std::vector<Message> & inbox) 
             a.await.active = false;
             a.await.collected.clear();
             a.await.wait_ids.clear();
-        } else {
-            for (const auto & m : inbox)
-                a.conversation.push_back({{"role", "user"},
-                    {"content", "[message from " + m.from + "]\n" + m.content}});
+        } else if (active && kind == PendingAwait::Kind::TIMER) {
+            std::string pk = pstate.value("kind", std::string("wait"));
+            if (pk == "poll") {
+                TurnOutcome o;
+                if (!poll_advance(rt, a, pstate, call_id, o)) {
+                    // re-parked: keep any drained messages for a later cycle
+                    if (!inbox.empty()) {
+                        std::lock_guard<std::mutex> lk(a.mu);
+                        for (auto it = inbox.rbegin(); it != inbox.rend(); ++it)
+                            a.mailbox.push_front(*it);
+                    }
+                    return o;
+                }
+            } else {  // wait
+                double secs = pstate.value("seconds", 0.0);
+                std::lock_guard<std::mutex> lk(a.mu);
+                a.conversation.push_back({{"role", "tool"}, {"tool_call_id", call_id},
+                                          {"content", json{{"waited", secs}}.dump()}});
+                a.await.active = false;
+                a.park_state   = json::object();
+                rt.trace(json{{"type", "wait"}, {"agent_id", a.id}, {"event", "resume"},
+                              {"seconds", secs}});
+            }
         }
+
+        std::lock_guard<std::mutex> lk(a.mu);
+        for (const auto & m : inbox)
+            a.conversation.push_back({{"role", "user"},
+                {"content", "[message from " + m.from + "]\n" + m.content}});
     }
 
     json tools = tools_for(a.allow);
@@ -407,6 +593,8 @@ TurnOutcome default_turn(Runtime & rt, Agent & a, std::vector<Message> & inbox) 
         std::string await_call_id;
         std::vector<std::string> await_ids;
         double await_timeout = 0;
+        bool        pending_timer_park = false;  // wait/poll_until requested a TIMER park
+        TurnOutcome timer_out;
 
         // dispatch each tool call (runtime tools in-process; leaf tools via the
         // registry, also in-process on this 8 MiB worker stack)
@@ -427,6 +615,62 @@ TurnOutcome default_turn(Runtime & rt, Agent & a, std::vector<Message> & inbox) 
                 if (args.is_object() && args.contains("timeout") && args["timeout"].is_number())
                     await_timeout = args["timeout"].get<double>();
                 continue;  // park after the other calls' results are recorded
+            }
+
+            if (tname == "wait") {
+                double secs = (args.is_object() && args.contains("seconds") && args["seconds"].is_number())
+                                  ? args["seconds"].get<double>()
+                                  : (args.is_object() && args.contains("s") && args["s"].is_number()
+                                         ? args["s"].get<double>() : 0.0);
+                if (secs < 0) secs = 0;
+                if (secs > g.max_wait_s) secs = g.max_wait_s;
+                { std::lock_guard<std::mutex> lk(a.mu);
+                  a.park_state = json{{"kind", "wait"}, {"seconds", secs}}; }
+                rt.trace(json{{"type", "wait"}, {"agent_id", a.id}, {"event", "park"},
+                              {"seconds", secs}});
+                timer_out = TurnOutcome();
+                timer_out.kind          = TurnOutcome::PARK;
+                timer_out.timer_park    = true;
+                timer_out.await_call_id = cid;
+                timer_out.timeout_s     = secs > 0 ? secs : 0.001;  // always wake via timer
+                pending_timer_park = true;
+                continue;
+            }
+
+            if (tname == "poll_until") {
+                std::string ptool = args.value("tool", std::string());
+                if (ptool.empty()) {
+                    std::lock_guard<std::mutex> lk(a.mu);
+                    a.conversation.push_back({{"role", "tool"}, {"tool_call_id", cid},
+                        {"content", json{{"error", "poll_until requires 'tool'"}}.dump()}});
+                    continue;
+                }
+                double interval = args.value("interval_s", args.value("interval", 1.0));
+                if (interval <= 0) interval = 1.0;
+                if (interval > g.max_poll_interval_s) interval = g.max_poll_interval_s;
+                double timeout = args.value("timeout_s", args.value("timeout", 30.0));
+                if (timeout < 0) timeout = 0;
+                if (timeout > g.max_poll_timeout_s) timeout = g.max_poll_timeout_s;
+                int max_iters = args.value("max_iterations", 0);
+                if (max_iters <= 0 || max_iters > g.max_poll_iterations) max_iters = g.max_poll_iterations;
+
+                json ps;
+                ps["kind"]      = "poll";
+                ps["tool"]      = ptool;
+                ps["args"]      = (args.is_object() && args.contains("args") && args["args"].is_object())
+                                      ? args["args"] : json::object();
+                ps["predicate"] = (args.is_object() && args.contains("predicate"))
+                                      ? args["predicate"] : json::object();
+                ps["interval"]  = interval;
+                ps["deadline"]  = timeout > 0 ? agentrt::steady_seconds() + timeout : 0.0;
+                ps["max_iters"] = max_iters;
+                ps["iters"]     = 0;
+                rt.trace(json{{"type", "poll"}, {"agent_id", a.id}, {"event", "park"},
+                              {"tool", ptool}, {"interval_s", interval}, {"timeout_s", timeout}});
+
+                TurnOutcome o;
+                if (!poll_advance(rt, a, ps, cid, o)) { timer_out = o; pending_timer_park = true; }
+                continue;  // either resolved (tool result appended) or parked
             }
 
             json result;
@@ -453,6 +697,7 @@ TurnOutcome default_turn(Runtime & rt, Agent & a, std::vector<Message> & inbox) 
             o.timeout_s = await_timeout;
             return o;
         }
+        if (pending_timer_park) return timer_out;  // wait / poll_until yielded the worker
         // else loop: feed tool results back to the model
     }
 }
@@ -526,6 +771,7 @@ server_http_res_ptr handle_start(const server_http_req & req) {
 
         std::string err;
         std::vector<std::string> orch_tools = {"spawn_agent", "send_message", "await", "list_agents",
+                                               "wait", "poll_until", "schedule",
                                                "wiki_*", "wikidata_*"};
         std::string oid = g_rt->spawn("", "orchestrator", "orchestrator",
                                       orchestrator_prompt(), goal, orch_tools, err);
@@ -627,7 +873,10 @@ int llamafile_runtime_register_tools(server_tools & registry) {
     registry.tools.push_back(std::make_unique<SendMessageTool>());
     registry.tools.push_back(std::make_unique<AwaitTool>());
     registry.tools.push_back(std::make_unique<ListAgentsTool>());
-    return 4;
+    registry.tools.push_back(std::make_unique<WaitTool>());
+    registry.tools.push_back(std::make_unique<PollUntilTool>());
+    registry.tools.push_back(std::make_unique<ScheduleTool>());
+    return 7;
 }
 
 void llamafile_runtime_register_routes(server_http_context & http) {

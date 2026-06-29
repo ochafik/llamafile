@@ -203,6 +203,27 @@ o/$(MODE)/tests/agent_runtime_test: \
 	@mkdir -p $(@D)
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
+# ==============================================================================
+# Test: agent_runtime_sched_test (Phase 2 scheduling tools: wait/poll_until/
+# schedule + the poll_until predicate language)
+# ==============================================================================
+#
+# Exercises the timer-park machinery the scheduling tools ride on: wait() parks
+# without holding a worker and resumes after N; poll_until() re-checks on a timer
+# until a stub condition flips (and times out when it never does); schedule()
+# delivers a delayed message that wakes a parked target; the max-jobs cap trips.
+# Plus pure unit tests of agent_predicate.h. Links the core object only.
+
+o/$(MODE)/tests/agent_runtime_sched_test.o: tests/agent_runtime_sched_test.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(TESTS_CPPFLAGS) -c -o $@ $<
+
+o/$(MODE)/tests/agent_runtime_sched_test: \
+		o/$(MODE)/tests/agent_runtime_sched_test.o \
+		o/$(MODE)/llamafile/agent_runtime.o
+	@mkdir -p $(@D)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
 # Scripted mesh run (ddoc-09 9.1 integration gate, no model): drives the real
 # Runtime end-to-end and writes/prints a real trace.jsonl (tree + concurrency +
 # token totals). Links the core object only.
@@ -229,4 +250,5 @@ o/$(MODE)/tests: \
 	o/$(MODE)/tests/wikidata_test.runs \
 	o/$(MODE)/tests/path_jail_test.runs \
 	o/$(MODE)/tests/agent_runtime_test.runs \
+	o/$(MODE)/tests/agent_runtime_sched_test.runs \
 	o/$(MODE)/tests/agent_runtime_mesh_demo.runs

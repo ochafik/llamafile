@@ -96,17 +96,44 @@ enum class Status { IDLE, RUNNABLE, RUNNING, WAITING, DONE, FAILED };
 
 const char * status_name(Status s);
 
-// An agent parked on an await(): it yields its worker until every awaited id has
-// reported a message (collected here) or the deadline passes.
+// A timer-fired delivery created by the schedule() tool. The sweeper fires a job
+// when due by routing `content` from `from` to `to` (the same mailbox wake path
+// the Router uses); a repeating job (interval > 0) re-arms until `remaining`
+// hits 0. This is the runtime's small timer service.
+struct ScheduledJob {
+    std::string id;
+    std::string from;        // creator agent id
+    std::string to;          // target agent id/name
+    std::string content;     // message body delivered on fire
+    double      next_fire = 0;  // steady seconds
+    double      interval  = 0;  // 0 = one-shot; > 0 = repeat period
+    int         remaining = 1;  // fires left (decremented per fire)
+    bool        active    = true;
+};
+
+// A parked agent: it yields its worker until it is woken. Two flavours, both
+// resumed through the same timer/mailbox wake path (Phase 2 generalizes the
+// Phase-1 await into a timer-park so wait/poll_until ride the same machinery):
+//   * AWAIT  — wait until every awaited id has reported a message (collected
+//              here) or the deadline passes (await tool).
+//   * TIMER  — wait for the deadline only; messages do NOT wake it (used by the
+//              wait/poll_until scheduling tools). The turn fn keeps its own
+//              cross-resume scratch in Agent::park_state.
 struct PendingAwait {
+    enum class Kind { AWAIT, TIMER };
+    Kind                                          kind = Kind::AWAIT;
     bool                                          active = false;
-    std::string                                   tool_call_id;  // the await call to answer
+    std::string                                   tool_call_id;  // the call to answer
     std::vector<std::string>                      wait_ids;      // agents to hear from
     std::unordered_map<std::string, std::string>  collected;     // id -> reported content
     double                                        deadline = 0;  // steady seconds; 0 = none
     bool                                          timed_out = false;
 
+    // True only for an AWAIT park whose every wait_id has reported. A TIMER park
+    // is never "complete" — it is woken solely by the sweeper at its deadline (so
+    // it never busy-re-enqueues itself when wait_ids is empty).
     bool complete() const {
+        if (kind != Kind::AWAIT) return false;
         for (const auto & id : wait_ids)
             if (!collected.count(id)) return false;
         return true;
@@ -126,6 +153,8 @@ struct Agent {
     std::deque<Message>   mailbox;
     Status                status = Status::IDLE;
     PendingAwait          await;
+    json                  park_state = json::object();  // turn-fn scratch across a
+                                                        // timer park (wait/poll_until)
     json                  conversation = json::array();  // OpenAI messages[]
     std::string           last_result;
 
@@ -143,7 +172,9 @@ struct TurnOutcome {
     std::string              result;          // DONE/FAILED: terminal text
     std::vector<std::string> wait_ids;        // PARK: agents to await
     std::string              await_call_id;   // PARK: tool_call id to answer
-    double                   timeout_s = 0;   // PARK: 0 = no timeout
+    double                   timeout_s = 0;   // PARK: 0 = no timeout (AWAIT) /
+                                              //       the timer interval (TIMER)
+    bool                     timer_park = false;  // PARK: TIMER (wait/poll) vs AWAIT
 };
 
 class Runtime;
@@ -161,6 +192,13 @@ struct Guards {
     int  global_turn_budget = 256; // total chat turns across the session
     long global_token_budget = 0;  // 0 = unlimited; else cap total tokens
     int  max_pair_messages = 64;   // a->b message cap (cycle/storm limit)
+
+    // Phase 2 scheduling caps (refuse past these; never deadlock).
+    double max_wait_s          = 3600;  // cap on wait(seconds)
+    double max_poll_interval_s = 300;   // cap on poll_until interval
+    double max_poll_timeout_s  = 3600;  // cap on poll_until / schedule horizon
+    int    max_poll_iterations = 1000;  // cap on poll_until tool invocations
+    int    max_scheduled_jobs  = 64;    // live schedule() jobs per session
 };
 
 // ---------------------------------------------------------------------------
@@ -198,6 +236,18 @@ class Runtime {
 
     // list_agents() snapshot.
     json list() const;
+
+    // schedule() — register a timer-fired message delivery. The sweeper routes
+    // `content` from `from` to `to` after `delay_s` seconds; if `interval_s > 0`
+    // it repeats every interval for `count` fires (count<=0 => 1). Returns the
+    // job id, or "" + err on a guard refusal (unknown target / max jobs / caps).
+    std::string schedule_job(const std::string & from, const std::string & to,
+                             const std::string & content,
+                             double delay_s, double interval_s, int count,
+                             std::string & err);
+
+    // Count of live (active) scheduled jobs (for diagnostics / tests).
+    int scheduled_job_count() const;
 
     // Per-turn accounting hooks used by the turn fn.
     bool charge_turn();                       // false if the global turn budget is spent
@@ -248,6 +298,10 @@ class Runtime {
     pthread_t                sweeper_tid_ = 0;
     bool                     sweeper_started_ = false;
     std::atomic<bool>        running_{false};
+
+    // timer service (schedule() jobs); fired by the sweeper.
+    mutable std::mutex          jobs_mu_;
+    std::vector<ScheduledJob>   jobs_;
 
     std::atomic<int>         global_turns_{0};
     std::atomic<long>        total_prompt_tok_{0};
