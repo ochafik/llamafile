@@ -26,6 +26,8 @@
 // for the --session-dir flag (cross-TU, same pattern as the other hooks).
 void llamafile_runtime_set_session_root(const char * dir);
 
+#include <cosmo.h>  // GetProgramExecutableName
+
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -80,6 +82,24 @@ static bool is_llamafile_flag(const char* arg) {
            strcmp(arg, "--nothink") == 0 ||
            strcmp(arg, "--webcam-agent") == 0 ||
            strcmp(arg, "--version") == 0;
+}
+
+// Build the `--mcp` spec that self-spawns this same binary as an `mcp-server`
+// bridge (for the first-class --zim/--wikidata/--wiki-fts --server flags). Two
+// robustness requirements, both matching the test-harness convention
+// (tests/integration/runtime_mesh_test.py, tests/eval/agentic_flows.py):
+//   * Resolve the executable via GetProgramExecutableName(), NOT argv[0]: under
+//     APE self-exec argv[0] may be relative / PATH-looked-up / a transient
+//     loader path, which would make the self-spawn open the wrong file or fail.
+//   * Launch through `/bin/sh` (the polyglot prologue): posix_spawnp of a raw
+//     APE path returns ENOEXEC (no execvp sh-fallback in cosmo), so the bridge
+//     intermittently fails to register its tools.
+// The path is single-quoted so spaces in it (e.g. "/Volumes/AI Models at Home")
+// survive the host's command-line tokenizer.
+static std::string self_mcp_server_spec(const char * flag, const char * path) {
+    const char * exe = GetProgramExecutableName();
+    std::string self = (exe && *exe) ? exe : "llamafile";
+    return "/bin/sh '" + self + "' mcp-server " + flag + " '" + std::string(path) + "'";
 }
 
 LlamafileArgs parse_llamafile_args(int argc, char** argv) {
@@ -167,10 +187,7 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
         // --zim too; this makes it a first-class --server flag like --wikidata.)
         if (strcmp(arg, "--zim") == 0) {
             if (i + 1 < argc) {
-                std::string self = (argc > 0 && argv[0]) ? argv[0] : "llamafile";
-                std::string cmd = "'" + self + "' mcp-server --zim '" +
-                                  std::string(argv[i + 1]) + "'";
-                llamafile_mcp_add_server(cmd);
+                llamafile_mcp_add_server(self_mcp_server_spec("--zim", argv[i + 1]));
                 ++i;
             }
             continue;
@@ -183,10 +200,7 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
         // Consumed here so it never reaches llama.cpp's parser.
         if (strcmp(arg, "--wikidata") == 0) {
             if (i + 1 < argc) {
-                std::string self = (argc > 0 && argv[0]) ? argv[0] : "llamafile";
-                std::string cmd = "'" + self + "' mcp-server --wikidata '" +
-                                  std::string(argv[i + 1]) + "'";
-                llamafile_mcp_add_server(cmd);
+                llamafile_mcp_add_server(self_mcp_server_spec("--wikidata", argv[i + 1]));
                 ++i;
             }
             continue;
@@ -200,10 +214,7 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
         // reaches llama.cpp's parser.
         if (strcmp(arg, "--wiki-fts") == 0) {
             if (i + 1 < argc) {
-                std::string self = (argc > 0 && argv[0]) ? argv[0] : "llamafile";
-                std::string cmd = "'" + self + "' mcp-server --wiki-fts '" +
-                                  std::string(argv[i + 1]) + "'";
-                llamafile_mcp_add_server(cmd);
+                llamafile_mcp_add_server(self_mcp_server_spec("--wiki-fts", argv[i + 1]));
                 ++i;
             }
             continue;

@@ -42,6 +42,44 @@ def http(method, url, body=None, timeout=60):
         return r.status, r.read().decode()
 
 
+# --------------------------------------------------------------------------- #
+# Grounding: a retrieval tool_call in the session trace is the evidence that the
+# answer came from the wiki/wikidata stores, not the model's parametric memory.
+# (A grader substring like "330 m" passes even when the model recited it from
+# memory; grounding separates retrieved answers from recited ones.)
+# --------------------------------------------------------------------------- #
+RETRIEVAL_TOOL_PREFIXES = ("wiki_", "wikidata_")
+
+
+def is_retrieval_tool(name):
+    return bool(name) and name.startswith(RETRIEVAL_TOOL_PREFIXES)
+
+
+def fetch_grounding(base):
+    """GET /runtime/trace (NDJSON) for the current session and scan it for a
+    retrieval tool_call. Returns (grounded: bool, tools: sorted list of distinct
+    retrieval tool names called). Must be called BEFORE /runtime/stop (the trace
+    endpoint serves the *current* session)."""
+    tools = set()
+    try:
+        s, b = http("GET", base + "/runtime/trace", timeout=15)
+        if s != 200:
+            return False, []
+    except Exception:
+        return False, []
+    for line in b.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:
+            continue
+        if ev.get("type") == "tool_call" and is_retrieval_tool(ev.get("tool", "")):
+            tools.add(ev["tool"])
+    return (len(tools) > 0), sorted(tools)
+
+
 def wait_health(base, secs=300):
     for _ in range(secs):
         try:
@@ -121,8 +159,9 @@ OBJECTIVES = {
 # One attempt: start a fresh session, poll to a final answer, grade it.
 # --------------------------------------------------------------------------- #
 def run_attempt(base, goal, grader, timeout, turn_budget):
-    rec = dict(passed=False, total_tokens=0, prompt_tokens=0, completion_tokens=0,
-               n_agents=0, n_turns=0, wall=0.0, final="", timed_out=False, error=None)
+    rec = dict(passed=False, grounded=False, retrieval_tools=[], total_tokens=0,
+               prompt_tokens=0, completion_tokens=0, n_agents=0, n_turns=0,
+               wall=0.0, final="", timed_out=False, error=None)
     t0 = time.time()
     try:
         s, b = http("POST", base + "/runtime/start",
@@ -160,6 +199,10 @@ def run_attempt(base, goal, grader, timeout, turn_budget):
         else:
             rec["timed_out"] = True
 
+    # Grounding evidence must be read from the trace BEFORE the session is torn
+    # down (the trace endpoint serves the current session).
+    rec["grounded"], rec["retrieval_tools"] = fetch_grounding(base)
+
     try:
         http("POST", base + "/runtime/stop", {}, timeout=15)
     except Exception:
@@ -181,8 +224,12 @@ def report(results, attempts):
     print("\n" + "=" * 96)
     print("AGENTIC-FLOW EVAL REPORT  (tokens summed across ALL agents per run)")
     print("=" * 96)
-    hdr = (f"{'obj':<4} {'flow':<28} {'pass':>7} {'tok_mean':>9} {'tok_med':>8} "
-           f"{'tok_min':>8} {'tok_max':>8} {'agents':>6} {'turns':>6} {'wall_s':>7}")
+    # `pass` = answer grader; `gpass` = answer grader AND grounded (a retrieval
+    # tool_call in the trace); `grnd` = grounded regardless of grader. A high
+    # `pass` with a low `gpass` means the model is reciting from parametric
+    # memory, not using the wiki/wikidata tools.
+    hdr = (f"{'obj':<4} {'flow':<28} {'pass':>7} {'gpass':>7} {'grnd':>7} "
+           f"{'tok_mean':>9} {'agents':>6} {'turns':>6} {'wall_s':>7}")
     print(hdr)
     print("-" * len(hdr))
     means = {}
@@ -190,6 +237,8 @@ def report(results, attempts):
         recs = results[oid]
         n = len(recs)
         npass = sum(1 for r in recs if r["passed"])
+        ngpass = sum(1 for r in recs if r["passed"] and r["grounded"])
+        ngrnd = sum(1 for r in recs if r["grounded"])
         toks = [r["total_tokens"] for r in recs if r["total_tokens"] > 0]
         tm, tmed, tmin, tmax = _stats(toks)
         means[oid] = tm
@@ -197,8 +246,8 @@ def report(results, attempts):
         tn = statistics.mean([r["n_turns"] for r in recs]) if recs else 0
         wl = statistics.mean([r["wall"] for r in recs]) if recs else 0
         kind = OBJECTIVES[oid]["kind"]
-        print(f"{oid:<4} {kind:<28} {npass:>3}/{n:<3} {tm:>9.0f} {tmed:>8.0f} "
-              f"{tmin:>8.0f} {tmax:>8.0f} {ag:>6.1f} {tn:>6.1f} {wl:>7.1f}")
+        print(f"{oid:<4} {kind:<28} {npass:>3}/{n:<3} {ngpass:>3}/{n:<3} "
+              f"{ngrnd:>3}/{n:<3} {tm:>9.0f} {ag:>6.1f} {tn:>6.1f} {wl:>7.1f}")
     print("-" * len(hdr))
 
     # multi-agent multiplier = E3 mean tokens / E1 mean tokens (single baseline).
@@ -209,15 +258,20 @@ def report(results, attempts):
     else:
         print("\nMULTI-AGENT MULTIPLIER  E3/E1 = n/a (need both E1 and E3 in the run)")
 
-    # errors / timeouts summary
+    # errors / timeouts / parametric-reliance summary
     print("\nnotes:")
     for oid in results:
-        errs = [r for r in results[oid] if r["error"]]
-        tos = [r for r in results[oid] if r["timed_out"]]
+        recs = results[oid]
+        errs = [r for r in recs if r["error"]]
+        tos = [r for r in recs if r["timed_out"]]
+        para = [r for r in recs if r["passed"] and not r["grounded"]]
         if errs:
             print(f"  {oid}: {len(errs)} attempt(s) errored, first: {errs[0]['error']}")
         if tos:
             print(f"  {oid}: {len(tos)} attempt(s) timed out (no final answer)")
+        if para:
+            print(f"  {oid}: {len(para)} attempt(s) passed the grader WITHOUT grounding "
+                  f"(parametric recall, no wiki/wikidata tool_call)")
     print("=" * 96)
 
 
@@ -299,7 +353,9 @@ def main():
                                   args.timeout, args.turn_budget)
                 tag = "PASS" if rec["passed"] else ("TIMEOUT" if rec["timed_out"]
                                                     else ("ERR" if rec["error"] else "FAIL"))
-                print(f"  {oid} attempt {k+1}/{args.attempts}: {tag}  "
+                gtag = "grounded" if rec["grounded"] else "PARAMETRIC"
+                print(f"  {oid} attempt {k+1}/{args.attempts}: {tag} [{gtag}]  "
+                      f"tools={','.join(rec['retrieval_tools']) or '-'} "
                       f"tokens={rec['total_tokens']} agents={rec['n_agents']} "
                       f"turns={rec['n_turns']} wall={rec['wall']:.0f}s",
                       file=sys.stderr)
