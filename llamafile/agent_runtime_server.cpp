@@ -30,6 +30,7 @@
 // See ddocs/09-interactive-multiagent-runtime.md (Phase 1 = section 9.1).
 
 #include "agent_runtime.h"
+#include "agent_session.h"    // Phase 4: SessionManager (persist/pause/resume)
 #include "agent_predicate.h"  // poll_until predicate language
 
 #include "server-tools.h"   // server_tool, server_tools
@@ -55,6 +56,8 @@ using agentrt::Message;
 using agentrt::TurnOutcome;
 using agentrt::Guards;
 using agentrt::PendingAwait;
+using agentrt::SessionManager;
+using agentrt::KvFingerprint;
 using json = nlohmann::ordered_json;
 
 namespace {
@@ -69,8 +72,14 @@ std::string    g_model      = "default";
 int            g_n_parallel = 4;
 server_tools * g_registry   = nullptr;
 
+// Phase 4: the multi-session registry. v1 keeps ONE ACTIVE (decoding) session
+// at a time (the slot pool is shared); paused sessions are disk state. The
+// legacy /runtime/* endpoints alias the "current" session id for back-compat.
+SessionManager             g_sm;
 std::mutex                 g_session_mu;
-std::unique_ptr<Runtime>   g_rt;          // single active session (Phase 1)
+std::string                g_session_root;      // --session-dir (default below)
+std::string                g_current_sid;       // last created/active (for /runtime/*)
+bool                       g_sm_configured = false;
 
 // The current agent/runtime a scheduler worker is executing — read by the
 // runtime tools' invoke() so they know who is calling. Set only on the worker
@@ -734,64 +743,78 @@ server_http_res_ptr json_res(int status, const json & body) {
     return r;
 }
 
-std::string session_dir(const std::string & sid) {
+// Default session root: <TMPDIR|/tmp>/llamafile_sessions (overridable with
+// --session-dir, which sets g_session_root via the setter below).
+std::string default_session_root() {
     const char * tmp = getenv("TMPDIR");
     std::string base = (tmp && *tmp) ? tmp : "/tmp";
     if (!base.empty() && base.back() == '/') base.pop_back();
-    return base + "/llamafile_runtime_" + sid;
+    return base + "/llamafile_sessions";
 }
 
-// POST /runtime/start {goal} -> {session, orchestrator}
-server_http_res_ptr handle_start(const server_http_req & req) {
-    std::string body = req.body;
-    int status = 200;
-    json out;
-    run_joined_big_stack([&]() {
-        std::string goal;
-        int max_agents = 0, budget = 0;
-        json j = json::parse(body.empty() ? "{}" : body, nullptr, false);
-        if (j.is_object()) {
-            if (j.contains("goal") && j["goal"].is_string()) goal = j["goal"].get<std::string>();
-            if (j.contains("task") && j["task"].is_string() && goal.empty()) goal = j["task"].get<std::string>();
-            if (j.contains("max_agents") && j["max_agents"].is_number_integer()) max_agents = j["max_agents"].get<int>();
-            if (j.contains("turn_budget") && j["turn_budget"].is_number_integer()) budget = j["turn_budget"].get<int>();
-        }
-        if (goal.empty()) { status = 400; out = json{{"error", "missing 'goal'"}}; return; }
-
-        std::lock_guard<std::mutex> lk(g_session_mu);
-        if (g_rt) g_rt->stop();
-        g_rt = std::make_unique<Runtime>();
-        std::string sid = "s_" + std::to_string((long) (agentrt::now_seconds() * 1000) % 100000000);
-        Guards guards;
-        if (max_agents > 0) guards.max_live_agents = max_agents;
-        if (budget > 0) guards.global_turn_budget = budget;
-        g_rt->configure(sid, session_dir(sid), g_n_parallel, guards);
-        g_rt->set_turn_fn(default_turn);
-        g_rt->start();
-
-        std::string err;
-        std::vector<std::string> orch_tools = {"spawn_agent", "send_message", "await", "list_agents",
-                                               "wait", "poll_until", "schedule",
-                                               "wiki_*", "wikidata_*", "code_run_js"};
-        std::string oid = g_rt->spawn("", "orchestrator", "orchestrator",
-                                      orchestrator_prompt(), goal, orch_tools, err);
-        if (oid.empty()) { status = 500; out = json{{"error", err}}; return; }
-        out = json{{"ok", true}, {"session", sid}, {"orchestrator", oid},
-                   {"trace", session_dir(sid) + "/trace.jsonl"}};
-    });
-    return json_res(status, out);
+// The model/settings fingerprint guarding KV restore. n_ctx/rope/kv_type are not
+// reachable from the loopback-HTTP turn path, so we fingerprint by model alias +
+// n_parallel + the state-format version; that still detects a model/slot change.
+KvFingerprint model_fingerprint() {
+    KvFingerprint fp;
+    fp.model_id   = g_model;
+    fp.n_parallel = g_n_parallel;
+    fp.state_format_version = agentrt::kRuntimeStateVersion;
+    return fp;
 }
 
-server_http_res_ptr handle_events(const server_http_req &) {
+// Per-agent KV hooks. In this runtime agents decode over loopback HTTP (the
+// server's shared slot pool, continuous batching) — they own NO addressable
+// per-agent llama_context/sequence, so there is no correct KV to snapshot. We
+// therefore decline (return false) and the conversation (always persisted) is
+// re-prefilled on resume. This is also the MANDATED fallback for the hybrid
+// Qwen3.6 (recurrent state would not round-trip llama_state_seq_save_file). The
+// hook is here so a future per-agent-context wiring drops straight in.
+bool kv_save_hook(const Agent &, const std::string &, KvFingerprint &) {
+    return false;
+}
+bool kv_load_hook(Agent &, const std::string &, const KvFingerprint &) {
+    return false;
+}
+
+// Configure the SessionManager once (lazy: first create/resume). Holds
+// g_session_mu (the caller does).
+void ensure_sm_configured_locked() {
+    if (g_sm_configured) return;
+    if (g_session_root.empty()) g_session_root = default_session_root();
+    Guards guards;
+    g_sm.configure(g_session_root, /*max_sessions*/ 32, g_n_parallel, guards,
+                   default_turn, model_fingerprint(), kv_save_hook, kv_load_hook);
+    g_sm_configured = true;
+}
+
+// Spawn the orchestrator into a fresh session Runtime (the SeedFn).
+void seed_orchestrator(Runtime & rt, const std::string & goal) {
+    std::string err;
+    std::vector<std::string> orch_tools = {"spawn_agent", "send_message", "await", "list_agents",
+                                           "wait", "poll_until", "schedule",
+                                           "wiki_*", "wikidata_*", "code_run_js"};
+    rt.spawn("", "orchestrator", "orchestrator", orchestrator_prompt(), goal, orch_tools, err);
+}
+
+// Create + start a session; records it as g_current_sid for the /runtime/*
+// aliases. Returns the session id ("" + err on failure).
+std::string create_session(const std::string & goal, std::string & err) {
     std::lock_guard<std::mutex> lk(g_session_mu);
-    if (!g_rt) return json_res(409, json{{"error", "no active session; POST /runtime/start first"}});
-    agentrt::EventBroker * b = &g_rt->broker();
+    ensure_sm_configured_locked();
+    std::string sid = g_sm.create(goal, seed_orchestrator, err);
+    if (!sid.empty()) g_current_sid = sid;
+    return sid;
+}
+
+// --- SSE: stream a session's broker (replay-from-0 then live) --------------
+server_http_res_ptr events_stream(agentrt::EventBroker * b) {
     auto r = std::make_unique<server_http_res>();
     r->status = 200;
     r->content_type = "text/event-stream";
     r->headers["Cache-Control"] = "no-cache";
     r->headers["Connection"]    = "keep-alive";
-    auto cursor = std::make_shared<size_t>(0);  // replay full trace then stream
+    auto cursor = std::make_shared<size_t>(0);
     r->next = [b, cursor](std::string & chunk) -> bool {
         std::unique_lock<std::mutex> lk(b->mu);
         b->cv.wait_for(lk, std::chrono::seconds(15),
@@ -808,36 +831,13 @@ server_http_res_ptr handle_events(const server_http_req &) {
     return r;
 }
 
-server_http_res_ptr handle_status(const server_http_req &) {
-    int status = 200;
-    json out;
-    run_joined_big_stack([&]() {
-        std::lock_guard<std::mutex> lk(g_session_mu);
-        if (!g_rt) { status = 409; out = json{{"error", "no active session"}}; return; }
-        out = g_rt->metrics();
-        out["agents"] = g_rt->list();
-        out["final_answer"] = g_rt->final_answer();
-    });
-    return json_res(status, out);
-}
-
-server_http_res_ptr handle_trace(const server_http_req &) {
-    bool have = false;
+server_http_res_ptr serve_trace_file(const std::string & path) {
+    FILE * f = fopen(path.c_str(), "rb");
+    if (!f) return json_res(404, json{{"error", "no trace yet"}});
     std::string body;
-    run_joined_big_stack([&]() {
-        std::string sid;
-        { std::lock_guard<std::mutex> lk(g_session_mu);
-          if (!g_rt) return;
-          sid = g_rt->session_id(); }
-        std::string path = session_dir(sid) + "/trace.jsonl";
-        FILE * f = fopen(path.c_str(), "rb");
-        if (!f) return;
-        char buf[8192]; size_t n;
-        while ((n = fread(buf, 1, sizeof buf, f)) > 0) body.append(buf, n);
-        fclose(f);
-        have = true;
-    });
-    if (!have) return json_res(404, json{{"error", "no trace yet"}});
+    char buf[8192]; size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) body.append(buf, n);
+    fclose(f);
     auto r = std::make_unique<server_http_res>();
     r->status = 200;
     r->content_type = "application/x-ndjson; charset=utf-8";
@@ -845,9 +845,163 @@ server_http_res_ptr handle_trace(const server_http_req &) {
     return r;
 }
 
+// ===========================================================================
+// Phase 4 endpoints: /session (+ :id/...) + /sessions
+// ===========================================================================
+
+// POST /session {goal} -> {session, orchestrator?}
+server_http_res_ptr handle_session_create(const server_http_req & req) {
+    std::string body = req.body;
+    int status = 200;
+    json out;
+    run_joined_big_stack([&]() {
+        std::string goal;
+        json j = json::parse(body.empty() ? "{}" : body, nullptr, false);
+        if (j.is_object()) {
+            if (j.contains("goal") && j["goal"].is_string()) goal = j["goal"].get<std::string>();
+            if (goal.empty() && j.contains("task") && j["task"].is_string()) goal = j["task"].get<std::string>();
+        }
+        if (goal.empty()) { status = 400; out = json{{"error", "missing 'goal'"}}; return; }
+        std::string err;
+        std::string sid = create_session(goal, err);
+        if (sid.empty()) { status = 500; out = json{{"error", err}}; return; }
+        out = json{{"ok", true}, {"session", sid}, {"goal", goal},
+                   {"trace", g_sm.trace_path(sid)}};
+    });
+    return json_res(status, out);
+}
+
+// GET /sessions -> [ {id,status,n_agents,last_activity,total_tokens,...} ]
+server_http_res_ptr handle_sessions_list(const server_http_req &) {
+    int status = 200; json out;
+    run_joined_big_stack([&]() {
+        std::lock_guard<std::mutex> lk(g_session_mu);
+        ensure_sm_configured_locked();
+        out = json{{"sessions", g_sm.list()}, {"active", g_sm.active_id()}};
+    });
+    return json_res(status, out);
+}
+
+// GET /session/:id -> full state incl agents
+server_http_res_ptr handle_session_get(const server_http_req & req) {
+    std::string id = req.get_param("id");
+    int status = 200; json out;
+    run_joined_big_stack([&]() {
+        std::lock_guard<std::mutex> lk(g_session_mu);
+        ensure_sm_configured_locked();
+        bool found = false;
+        out = g_sm.describe(id, found);
+        if (!found) { status = 404; out = json{{"error", "no session '" + id + "'"}}; }
+    });
+    return json_res(status, out);
+}
+
+// GET /session/:id/events (SSE) — activates (resumes) the session if needed.
+server_http_res_ptr handle_session_events(const server_http_req & req) {
+    std::string id = req.get_param("id");
+    std::lock_guard<std::mutex> lk(g_session_mu);
+    ensure_sm_configured_locked();
+    std::string err;
+    agentrt::EventBroker * b = g_sm.broker_for(id, err);
+    if (!b) return json_res(404, json{{"error", err}});
+    return events_stream(b);
+}
+
+// GET /session/:id/trace
+server_http_res_ptr handle_session_trace(const server_http_req & req) {
+    std::string id = req.get_param("id");
+    std::string path;
+    { std::lock_guard<std::mutex> lk(g_session_mu);
+      ensure_sm_configured_locked();
+      path = g_sm.trace_path(id); }
+    return serve_trace_file(path);
+}
+
+server_http_res_ptr handle_session_pause(const server_http_req & req) {
+    std::string id = req.get_param("id");
+    int status = 200; json out;
+    run_joined_big_stack([&]() {
+        std::lock_guard<std::mutex> lk(g_session_mu);
+        ensure_sm_configured_locked();
+        std::string err;
+        if (!g_sm.pause(id, err)) { status = 404; out = json{{"error", err}}; return; }
+        out = json{{"ok", true}, {"session", id}, {"status", "paused"}};
+    });
+    return json_res(status, out);
+}
+
+server_http_res_ptr handle_session_resume(const server_http_req & req) {
+    std::string id = req.get_param("id");
+    int status = 200; json out;
+    run_joined_big_stack([&]() {
+        std::lock_guard<std::mutex> lk(g_session_mu);
+        ensure_sm_configured_locked();
+        std::string err;
+        if (!g_sm.resume(id, err)) { status = 409; out = json{{"error", err}}; return; }
+        g_current_sid = id;
+        bool found = false;
+        out = g_sm.describe(id, found);
+        out["ok"] = true;
+    });
+    return json_res(status, out);
+}
+
+server_http_res_ptr handle_session_stop(const server_http_req & req) {
+    std::string id = req.get_param("id");
+    int status = 200; json out;
+    run_joined_big_stack([&]() {
+        std::lock_guard<std::mutex> lk(g_session_mu);
+        ensure_sm_configured_locked();
+        std::string err;
+        if (!g_sm.stop(id, err)) { status = 404; out = json{{"error", err}}; return; }
+        out = json{{"ok", true}, {"session", id}, {"status", "done"}};
+    });
+    return json_res(status, out);
+}
+
+// ---------------------------------------------------------------------------
+// Legacy /runtime/* — aliases over the "current" (last created/active) session.
+// ---------------------------------------------------------------------------
+std::string current_sid_locked() { return g_current_sid; }
+
+server_http_res_ptr handle_start(const server_http_req & req) {
+    return handle_session_create(req);   // POST /runtime/start == POST /session
+}
+
+server_http_res_ptr handle_events(const server_http_req &) {
+    std::string id;
+    { std::lock_guard<std::mutex> lk(g_session_mu); id = current_sid_locked(); }
+    if (id.empty()) return json_res(409, json{{"error", "no active session; POST /runtime/start first"}});
+    std::lock_guard<std::mutex> lk(g_session_mu);
+    std::string err;
+    agentrt::EventBroker * b = g_sm.broker_for(id, err);
+    if (!b) return json_res(404, json{{"error", err}});
+    return events_stream(b);
+}
+
+server_http_res_ptr handle_status(const server_http_req &) {
+    int status = 200; json out;
+    run_joined_big_stack([&]() {
+        std::lock_guard<std::mutex> lk(g_session_mu);
+        if (g_current_sid.empty()) { status = 409; out = json{{"error", "no active session"}}; return; }
+        bool found = false;
+        out = g_sm.describe(g_current_sid, found);
+        if (!found) { status = 409; out = json{{"error", "no active session"}}; }
+    });
+    return json_res(status, out);
+}
+
+server_http_res_ptr handle_trace(const server_http_req &) {
+    std::string path;
+    { std::lock_guard<std::mutex> lk(g_session_mu);
+      if (g_current_sid.empty()) return json_res(404, json{{"error", "no trace yet"}});
+      path = g_sm.trace_path(g_current_sid); }
+    return serve_trace_file(path);
+}
+
 server_http_res_ptr handle_stop(const server_http_req &) {
     std::lock_guard<std::mutex> lk(g_session_mu);
-    if (g_rt) { g_rt->stop(); }
+    if (!g_current_sid.empty()) { std::string err; g_sm.stop(g_current_sid, err); }
     return json_res(200, json{{"ok", true}});
 }
 
@@ -879,7 +1033,23 @@ int llamafile_runtime_register_tools(server_tools & registry) {
     return 7;
 }
 
+// --session-dir DIR — set the session persistence root (parsed in args.cpp).
+void llamafile_runtime_set_session_root(const char * dir) {
+    if (dir && *dir) g_session_root = dir;
+}
+
 void llamafile_runtime_register_routes(server_http_context & http) {
+    // Phase 4: multi-session endpoints.
+    http.post("/session",              handle_session_create);
+    http.get ("/sessions",             handle_sessions_list);
+    http.get ("/session/:id",          handle_session_get);
+    http.get ("/session/:id/events",   handle_session_events);
+    http.get ("/session/:id/trace",    handle_session_trace);
+    http.post("/session/:id/pause",    handle_session_pause);
+    http.post("/session/:id/resume",   handle_session_resume);
+    http.post("/session/:id/stop",     handle_session_stop);
+
+    // Legacy /runtime/* aliases (back-compat: drive the current session).
     http.post("/runtime/start",  handle_start);
     http.get ("/runtime/events", handle_events);
     http.get ("/runtime/status", handle_status);

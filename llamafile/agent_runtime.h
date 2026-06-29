@@ -95,6 +95,7 @@ struct Message {
 enum class Status { IDLE, RUNNABLE, RUNNING, WAITING, DONE, FAILED };
 
 const char * status_name(Status s);
+Status       status_from_name(const std::string & s);
 
 // A timer-fired delivery created by the schedule() tool. The sweeper fires a job
 // when due by routing `content` from `from` to `to` (the same mailbox wake path
@@ -218,6 +219,27 @@ class Runtime {
     void start();   // launch the worker pool (idempotent)
     void stop();    // join workers, close broker
 
+    // Phase 4 — pause/resume scheduling (no teardown). pause_scheduling() stops
+    // workers from picking up NEW cycles (and the sweeper from firing) but lets
+    // any in-flight cycle finish. quiesce() blocks until no agent is RUNNING (so
+    // a snapshot is consistent), up to timeout_s (returns false on timeout).
+    // resume_scheduling() re-arms the pool. is_paused() reports the flag.
+    void pause_scheduling();
+    void resume_scheduling();
+    bool quiesce(double timeout_s);
+    bool is_paused() const { return paused_.load(); }
+
+    // Phase 4 — full-state serialization for session persistence. export_state()
+    // captures every agent (id/name/role/system_prompt/allow/parent/depth/status/
+    // conversation/last_result/turn+token counters/mailbox/await+park) + the
+    // scheduled jobs + the session counters + the final answer, as one JSON blob.
+    // import_state() rebuilds that into a freshly configured (NOT yet started)
+    // Runtime; call start() afterwards to re-arm the scheduler. Timer deadlines
+    // are stored as *remaining* seconds so they survive a steady-clock reset / a
+    // full process restart.
+    json export_state() const;
+    void import_state(const json & j);
+
     // Create an agent. Returns its id, or "" on a guard refusal (err set).
     // parent_id "" => a root agent (the orchestrator). The conversation is
     // seeded with [system, user(task)] when task is non-empty.
@@ -298,6 +320,7 @@ class Runtime {
     pthread_t                sweeper_tid_ = 0;
     bool                     sweeper_started_ = false;
     std::atomic<bool>        running_{false};
+    std::atomic<bool>        paused_{false};
 
     // timer service (schedule() jobs); fired by the sweeper.
     mutable std::mutex          jobs_mu_;

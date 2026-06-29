@@ -22,6 +22,10 @@
 #include "agent_loop.h"
 #include "webcam_agent.h"
 
+// llamafile interactive runtime (agent_runtime_server.cpp) — session root setter
+// for the --session-dir flag (cross-TU, same pattern as the other hooks).
+void llamafile_runtime_set_session_root(const char * dir);
+
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -175,6 +179,17 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
         // here so it never reaches llama.cpp's parser.
         if (strcmp(arg, "--agents") == 0) {
             llamafile_agents_enable();
+            continue;
+        }
+
+        // --session-dir DIR: root for the interactive runtime's persisted
+        // sessions (Phase 4). llamafile-owned flag; consumed here so it never
+        // reaches llama.cpp's parser.
+        if (strcmp(arg, "--session-dir") == 0) {
+            if (i + 1 < argc) {
+                llamafile_runtime_set_session_root(argv[i + 1]);
+                ++i;
+            }
             continue;
         }
 

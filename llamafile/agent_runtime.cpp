@@ -26,9 +26,11 @@
 
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdint>
+#include <thread>
 
 namespace agentrt {
 
@@ -42,6 +44,15 @@ const char * status_name(Status s) {
         case Status::FAILED:   return "failed";
     }
     return "?";
+}
+
+Status status_from_name(const std::string & s) {
+    if (s == "runnable") return Status::RUNNABLE;
+    if (s == "running")  return Status::RUNNING;
+    if (s == "waiting")  return Status::WAITING;
+    if (s == "done")     return Status::DONE;
+    if (s == "failed")   return Status::FAILED;
+    return Status::IDLE;
 }
 
 double now_seconds() {
@@ -384,13 +395,50 @@ void Runtime::worker_loop() {
         std::string id;
         {
             std::unique_lock<std::mutex> lk(q_mu_);
-            q_cv_.wait(lk, [&]() { return !running_.load() || !runnable_.empty(); });
+            q_cv_.wait(lk, [&]() {
+                return !running_.load() || (!paused_.load() && !runnable_.empty());
+            });
             if (!running_.load() && runnable_.empty()) return;
+            // Paused: hold every worker idle (no new cycles) until resumed/stopped.
+            // In-flight cycles already past this point run to completion.
+            if (paused_.load() && running_.load()) continue;
+            if (runnable_.empty()) continue;
             id = runnable_.front();
             runnable_.pop_front();
         }
         Agent * a = find(id);
         if (a) run_cycle(a);
+    }
+}
+
+void Runtime::pause_scheduling() {
+    paused_.store(true);
+    q_cv_.notify_all();
+    trace(json{{"type", "session"}, {"event", "pause_scheduling"}});
+}
+
+void Runtime::resume_scheduling() {
+    paused_.store(false);
+    q_cv_.notify_all();
+    trace(json{{"type", "session"}, {"event", "resume_scheduling"}});
+}
+
+bool Runtime::quiesce(double timeout_s) {
+    double deadline = steady_seconds() + (timeout_s > 0 ? timeout_s : 0);
+    for (;;) {
+        bool any_running = false;
+        {
+            std::lock_guard<std::mutex> lk(agents_mu_);
+            for (const auto & id : order_) {
+                auto it = agents_.find(id);
+                if (it == agents_.end()) continue;
+                std::lock_guard<std::mutex> al(it->second->mu);
+                if (it->second->status == Status::RUNNING) { any_running = true; break; }
+            }
+        }
+        if (!any_running) return true;
+        if (steady_seconds() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }
 
@@ -486,6 +534,8 @@ void Runtime::sweeper_loop() {
             q_cv_.wait_for(lk, milliseconds(50), [&]() { return !running_.load(); });
         }
         if (!running_.load()) break;
+        // Paused: do not fire timers / scheduled jobs (keeps the snapshot stable).
+        if (paused_.load()) continue;
         double t = steady_seconds();
 
         // --- park deadlines: AWAIT timeouts + TIMER (wait/poll) wakeups ---
@@ -595,6 +645,207 @@ int Runtime::scheduled_job_count() const {
     int n = 0;
     for (const auto & j : jobs_) if (j.active) ++n;
     return n;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: full-state (de)serialization for session persistence
+// ---------------------------------------------------------------------------
+json Runtime::export_state() const {
+    json j;
+    j["counters"] = json{
+        {"global_turns", global_turns_.load()},
+        {"total_prompt_tokens", total_prompt_tok_.load()},
+        {"total_completion_tokens", total_completion_tok_.load()},
+    };
+
+    json agents = json::array();
+    double t = steady_seconds();
+    {
+        std::lock_guard<std::mutex> lk(agents_mu_);
+        for (const auto & id : order_) {
+            auto it = agents_.find(id);
+            if (it == agents_.end()) continue;
+            Agent * a = it->second.get();
+            std::lock_guard<std::mutex> al(a->mu);
+
+            json mb = json::array();
+            for (const auto & m : a->mailbox)
+                mb.push_back(json{{"from", m.from}, {"content", m.content}, {"ts", m.ts}});
+
+            json aw = json::object();
+            aw["kind"]         = a->await.kind == PendingAwait::Kind::TIMER ? "timer" : "await";
+            aw["active"]       = a->await.active;
+            aw["tool_call_id"] = a->await.tool_call_id;
+            aw["wait_ids"]     = a->await.wait_ids;
+            aw["timed_out"]    = a->await.timed_out;
+            json coll = json::object();
+            for (const auto & kv : a->await.collected) coll[kv.first] = kv.second;
+            aw["collected"]    = coll;
+            // store the AWAIT deadline as remaining seconds (steady-clock safe)
+            aw["remaining_s"]  = (a->await.deadline > 0) ? std::max(0.0, a->await.deadline - t) : 0.0;
+
+            // park_state may carry an absolute steady "deadline" (poll_until's
+            // overall timeout) — rewrite it to remaining seconds for portability.
+            json ps = a->park_state;
+            if (ps.is_object() && ps.contains("deadline") && ps["deadline"].is_number()) {
+                double dl = ps["deadline"].get<double>();
+                ps["deadline_remaining_s"] = (dl > 0) ? std::max(0.0, dl - t) : 0.0;
+                ps.erase("deadline");
+            }
+
+            agents.push_back(json{
+                {"id", a->id}, {"name", a->name}, {"role", a->role},
+                {"system_prompt", a->system_prompt}, {"allow", a->allow},
+                {"parent_id", a->parent_id}, {"depth", a->depth},
+                {"status", status_name(a->status)},
+                {"conversation", a->conversation},
+                {"last_result", a->last_result},
+                {"turns_run", a->turns_run},
+                {"tok_prompt", a->tok_prompt},
+                {"tok_completion", a->tok_completion},
+                {"mailbox", mb},
+                {"await", aw},
+                {"park_state", ps},
+            });
+        }
+    }
+    j["agents"] = agents;
+
+    json pc = json::object();
+    {
+        std::lock_guard<std::mutex> lk(agents_mu_);
+        for (const auto & kv : pair_counts_) pc[kv.first] = kv.second;
+    }
+    j["pair_counts"] = pc;
+
+    json jobs = json::array();
+    {
+        std::lock_guard<std::mutex> lk(jobs_mu_);
+        for (const auto & jb : jobs_) {
+            if (!jb.active) continue;
+            jobs.push_back(json{
+                {"id", jb.id}, {"from", jb.from}, {"to", jb.to},
+                {"content", jb.content},
+                {"delay_remaining_s", std::max(0.0, jb.next_fire - t)},
+                {"interval", jb.interval}, {"remaining", jb.remaining},
+            });
+        }
+    }
+    j["jobs"] = jobs;
+
+    {
+        std::lock_guard<std::mutex> lk(final_mu_);
+        j["final_answer"] = final_answer_;
+        j["final_agent"]  = final_agent_;
+    }
+    return j;
+}
+
+void Runtime::import_state(const json & j) {
+    double t = steady_seconds();
+    std::lock_guard<std::mutex> lk(agents_mu_);
+    agents_.clear();
+    order_.clear();
+    name_idx_.clear();
+    pair_counts_.clear();
+
+    if (j.contains("agents") && j["agents"].is_array()) {
+        for (const auto & e : j["agents"]) {
+            if (!e.is_object()) continue;
+            auto a = std::make_unique<Agent>();
+            a->id            = e.value("id", make_id("a_"));
+            a->name          = e.value("name", a->id);
+            a->role          = e.value("role", std::string());
+            a->system_prompt = e.value("system_prompt", std::string());
+            if (e.contains("allow") && e["allow"].is_array())
+                for (const auto & p : e["allow"]) if (p.is_string()) a->allow.push_back(p.get<std::string>());
+            a->parent_id     = e.value("parent_id", std::string());
+            a->depth         = e.value("depth", 0);
+            a->conversation  = e.contains("conversation") ? e["conversation"] : json::array();
+            a->last_result   = e.value("last_result", std::string());
+            a->turns_run     = e.value("turns_run", 0);
+            a->tok_prompt    = e.value("tok_prompt", 0L);
+            a->tok_completion= e.value("tok_completion", 0L);
+
+            if (e.contains("mailbox") && e["mailbox"].is_array())
+                for (const auto & m : e["mailbox"])
+                    a->mailbox.push_back(Message{m.value("from", std::string()),
+                                                 m.value("content", std::string()),
+                                                 m.value("ts", 0.0)});
+
+            Status s = status_from_name(e.value("status", std::string("idle")));
+
+            if (e.contains("await") && e["await"].is_object()) {
+                const json & aw = e["await"];
+                a->await.kind         = aw.value("kind", std::string("await")) == "timer"
+                                            ? PendingAwait::Kind::TIMER : PendingAwait::Kind::AWAIT;
+                a->await.active       = aw.value("active", false);
+                a->await.tool_call_id = aw.value("tool_call_id", std::string());
+                if (aw.contains("wait_ids") && aw["wait_ids"].is_array())
+                    for (const auto & w : aw["wait_ids"]) if (w.is_string()) a->await.wait_ids.push_back(w.get<std::string>());
+                if (aw.contains("collected") && aw["collected"].is_object())
+                    for (auto it = aw["collected"].begin(); it != aw["collected"].end(); ++it)
+                        a->await.collected[it.key()] = it.value().is_string() ? it.value().get<std::string>() : it.value().dump();
+                a->await.timed_out = aw.value("timed_out", false);
+                double rem = aw.value("remaining_s", 0.0);
+                a->await.deadline = rem > 0 ? t + rem : 0.0;
+            }
+
+            a->park_state = e.contains("park_state") ? e["park_state"] : json::object();
+            // restore poll_until's overall deadline from the portable remaining
+            if (a->park_state.is_object() && a->park_state.contains("deadline_remaining_s")) {
+                double rem = a->park_state["deadline_remaining_s"].get<double>();
+                a->park_state["deadline"] = rem > 0 ? t + rem : 0.0;
+                a->park_state.erase("deadline_remaining_s");
+            }
+
+            // An interrupted in-flight turn (RUNNING) is re-run from the
+            // conversation (the source of truth) on resume.
+            if (s == Status::RUNNING) s = Status::RUNNABLE;
+            a->status   = s;
+            a->enqueued = false;
+
+            std::string id = a->id;
+            name_idx_[a->name] = id;
+            order_.push_back(id);
+            agents_[id] = std::move(a);
+        }
+    }
+
+    if (j.contains("pair_counts") && j["pair_counts"].is_object())
+        for (auto it = j["pair_counts"].begin(); it != j["pair_counts"].end(); ++it)
+            pair_counts_[it.key()] = it.value().get<int>();
+
+    if (j.contains("counters") && j["counters"].is_object()) {
+        global_turns_.store(j["counters"].value("global_turns", 0));
+        total_prompt_tok_.store(j["counters"].value("total_prompt_tokens", 0L));
+        total_completion_tok_.store(j["counters"].value("total_completion_tokens", 0L));
+    }
+
+    {
+        std::lock_guard<std::mutex> lk2(jobs_mu_);
+        jobs_.clear();
+        if (j.contains("jobs") && j["jobs"].is_array()) {
+            for (const auto & e : j["jobs"]) {
+                ScheduledJob jb;
+                jb.id        = e.value("id", make_id("j_"));
+                jb.from      = e.value("from", std::string());
+                jb.to        = e.value("to", std::string());
+                jb.content   = e.value("content", std::string());
+                jb.next_fire = t + e.value("delay_remaining_s", 0.0);
+                jb.interval  = e.value("interval", 0.0);
+                jb.remaining = e.value("remaining", 1);
+                jb.active    = true;
+                jobs_.push_back(jb);
+            }
+        }
+    }
+
+    if (j.contains("final_answer") || j.contains("final_agent")) {
+        std::lock_guard<std::mutex> lk3(final_mu_);
+        final_answer_ = j.value("final_answer", std::string());
+        final_agent_  = j.value("final_agent", std::string());
+    }
 }
 
 }  // namespace agentrt

@@ -131,6 +131,7 @@ LLAMAFILE_SRCS_CPP := \
 	llamafile/agent_loop.cpp \
 	llamafile/agent_runtime.cpp \
 	llamafile/agent_runtime_server.cpp \
+	llamafile/agent_session.cpp \
 	llamafile/args.cpp \
 	llamafile/browser_tool.cpp \
 	llamafile/chatbot_api.cpp \

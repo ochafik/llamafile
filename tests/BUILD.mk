@@ -238,6 +238,26 @@ o/$(MODE)/tests/agent_runtime_mesh_demo: \
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # ==============================================================================
+# Test: agent_session_test (Phase 4 persisted/pausable/resumable sessions)
+# ==============================================================================
+#
+# Exercises Runtime export/import roundtrip, the SessionManager lifecycle
+# (create/list/pause/resume/stop) incl. a simulated full process restart from
+# disk, the KV-fingerprint guard (match restores / tamper falls back), and the
+# bounded-sessions eviction. Model-free: fake TurnFn + injected KV hooks. Links
+# the runtime core + the session manager objects.
+o/$(MODE)/tests/agent_session_test.o: tests/agent_session_test.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(TESTS_CPPFLAGS) -c -o $@ $<
+
+o/$(MODE)/tests/agent_session_test: \
+		o/$(MODE)/tests/agent_session_test.o \
+		o/$(MODE)/llamafile/agent_runtime.o \
+		o/$(MODE)/llamafile/agent_session.o
+	@mkdir -p $(@D)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+# ==============================================================================
 # Test: code_run_wrapper_test (Phase 3 headless-CDP code interpreter, ddoc 09 §4)
 # ==============================================================================
 #
@@ -270,4 +290,5 @@ o/$(MODE)/tests: \
 	o/$(MODE)/tests/agent_runtime_test.runs \
 	o/$(MODE)/tests/agent_runtime_sched_test.runs \
 	o/$(MODE)/tests/agent_runtime_mesh_demo.runs \
+	o/$(MODE)/tests/agent_session_test.runs \
 	o/$(MODE)/tests/code_run_wrapper_test.runs
