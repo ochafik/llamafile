@@ -96,3 +96,11 @@ Built a minimal MCP client (`scratchpad/mcpproto/mcp_client.cpp`, ~110 lines) wi
 - **R2** native tool-calling quality depends on the model's chat template (jinja tool support) — verify with a known tool-calling model in P2; document supported models.
 - **R3** in-APE embed of multi-GB ZIM — sidestepped by defaulting to external `--zim`; embed only small ZIMs.
 - **R4** MCP subprocess Windows edge cases (pipe poll) — mitigate with a blocking reader thread; HTTP fallback.
+
+---
+
+## Perf finding — resident vs CLI on FULL Wikipedia (measured 2026-06-29)
+Full English Wikipedia ZIM `wikipedia_en_all_nopic_2026-06.zim` (49 GB, ~7M articles) on a 96 GB Mac (21 GB model resident):
+- **Resident `mcp-server`/`--server` (the agent path): query 1 = 0.74s (loads the title index into process RAM once), queries 2–4 = ~0.01s.** Excellent — this is what agents use.
+- **CLI (`llamafile wikipedia …`): ~20s/call on the 49 GB ZIM** — it re-opens + re-loads pointer lists/index every invocation, and the 49 GB file's scattered index pages get evicted from page cache between runs → cold random reads off the external drive (16s system time). Small ZIMs (Simple-wiki 0.9 GB) are ~0.17s either way.
+**Takeaways:** (1) the index lives in the archive struct's malloc'd buffers, so a resident process is fast regardless of page cache — **use the resident server for big ZIMs**. (2) Optional fast-CLI enhancement (user's idea): have `llamafile wikipedia` detect/connect to a running `--server`/`mcp-server` and proxy the query (shallow client → resident), falling back to direct-open. (3) Optional: mmap the title index instead of pread-into-malloc so cold-open is page-fault-lazy. Neither is needed for the agent use case.
