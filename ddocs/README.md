@@ -102,3 +102,22 @@ One portable `llamafile` (`origin/upgrade-2026`; llama.cpp pristine except the s
 **Design principle that held throughout:** every capability is a llamafile-owned module exposing one handler across surfaces (CLI / mcp-server / /tools / web UI / MCP), so **llama.cpp stayed pristine** (only `#ifdef LLAMAFILE_TUI` hooks + the scripted patch layer).
 
 **Remaining = optional polish:** full Wikidata store finishing its background build · Wikidata ETL fidelity (best-rank/unit-normalize) + search tiebreak · Wikipedia FTS5 sidecar (full-text vs title) · multi-agent web-UI lane visualization (Svelte source build) · server-side auto-inject of the clip URL into `send_email` args · hybrid-model `ignore_frame` attention-only KV trim (needs a submodule patch) · GPU/Metal is the interactive-speed lever (video already runs on Metal).
+
+---
+
+## ✅✅ INTERACTIVE MULTI-AGENT RUNTIME COMPLETE (2026-06-29) — ddoc 09
+The multi-agent *core* (delegate-tools) was upgraded into a full **in-process agent runtime** (requirements locked with the user). All llamafile-owned, llama.cpp pristine, `make check` green. 5 phases:
+
+| Phase | Capability | How | Tests |
+|---|---|---|---|
+| 1 | **Mailbox mesh + async + traces** | `agent_runtime.{h,cpp}`: Agent+mailbox+Router+Scheduler(slot pool) + non-blocking `spawn_agent`/`send_message`/`await`/`list_agents`; SSE-mux by agent_id; `trace.jsonl`; **per-agent token accounting**; runaway guards | unit (router/mailbox/scheduler/await/guards) + mesh-demo (real trace tree, overlapping=concurrency) + model E2E 7/7 |
+| — | **Crash fix (pre-existing SIGBUS)** | cosmo default thread stack ~80KiB → `/v1/chat`+tools grammar/autoparser overflows httplib workers → `server-http.cpp.patch` runs every handler on an **8MiB pthread** | repro→fixed; bisected (not path-jail) |
+| — | **Agentic-flow EVAL** | `tests/eval/` E1–E4 ×N: success/N + **tokens across ALL agents** + multiplier | validated: E1/E3 2/2, **multi-agent = 2.51×** single-agent tokens |
+| 2 | **Scheduling** | `wait`/`poll_until`/`schedule` as park+timer-wake (no slot held); `agent_predicate.h` | `agent_runtime_sched_test` 41 |
+| 3 | **Code interpreter** | `code_run_js`/`code_render_html` via headless-CDP (reuse browser tool); in agent allowlists | verified vs Chrome 149 + `code_run_wrapper_test` |
+| 4 | **Persisted sessions** | `agent_session.{h,cpp}` SessionManager; `/session/*` CRUD+pause/resume/stop; atomic snapshot (conversation=truth + re-prefill; KV fingerprint+fallback) | `agent_session_test` 38 + **pause→kill -9→restart→resume** correct |
+| 5 | **Web UI** | `llamafile/agent_ui/agents.html` (ZIPOBJ `/zip`, served `/agents`): session manager + live agent-lane tree from SSE traces | served 200 + SSE mesh verified |
+
+**New surface:** tools `spawn_agent/send_message/await/list_agents/wait/poll_until/schedule/code_run_js/code_render_html`; endpoints `/session/*` (+`/runtime/*` aliases), `/agents`. Runtime tests all in `make check`; `runtime_mesh_test.py` + `tests/eval/` are model-gated. Design + risks: ddoc 09.
+
+**The full vision is now realized end-to-end:** offline Wikipedia · structured Wikidata facts · live web · MCP host+server · Claude-Code drop-in · **an interactive message-passing multi-agent runtime** (async, scheduling, code-interp, persisted sessions, live UI) · video witness-and-act webcam agent — one portable binary.
