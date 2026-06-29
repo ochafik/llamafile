@@ -76,3 +76,21 @@ Tools (suspend without holding a slot; resume via the Scheduler/timer→mailbox)
 - **Hybrid-model KV save/restore** (Qwen3.6 recurrent state) → verify `llama_state_seq_save_file` captures recurrent state; else resume via re-prefill.
 - **CDP code-interp security** → sandbox/timeouts/opt-in (reuse browser guardrails).
 - **CPU speed** → async hides latency but throughput is still CPU-bound; GPU/Metal is the lever (already works).
+
+---
+
+## 11. Agentic-flow EVAL harness (test coverage — reliability + token cost)
+Beyond the hermetic unit/integration tests, add a **behavioral eval** that runs simple objectives many times and measures reliability + the multi-agent token multiplier (the ddoc 03 concern). Model-gated (needs the model + runtime) → committed + runnable, NOT in `make check`; produces a report.
+
+`tests/eval/agentic_flows.py` (runs against a live `--server` runtime):
+- **Objectives** (simple, deterministically gradable):
+  | # | Objective | Flow | Grade (pass if) |
+  |---|---|---|---|
+  | E1 | "Height of the Eiffel Tower?" | single-agent + wiki | answer contains 330/324/300 m |
+  | E2 | "What country is the Eiffel Tower in? (use Wikidata)" | single + wikidata | contains "France" |
+  | E3 | "Compare Eiffel Tower vs Statue of Liberty height; which is taller?" | orchestrator + 2 researchers (parallel) | contains "Eiffel" AND ("taller"/the right ordering) |
+  | E4 | a claim to verify (one true, one false) | researcher + verifier | correct verdict |
+- **Protocol:** each objective × **N=10 attempts**. Per attempt record: pass/fail (grader = substring/regex; optional LLM-judge fallback), and **total tokens across ALL agents** (sum `tokens_prompt+tokens_completion` over every agent_id in that run's trace.jsonl / the session total field), wall-clock, #agents, #turns.
+- **Report (per objective):** success **X/10**, token stats (mean/median/min/max across attempts), turns/agents; and the **multi-agent multiplier** = E3 tokens ÷ a single-agent baseline answering the same. Flag objectives below a success threshold and the cost of the mesh.
+- **Why:** turns "it worked once" into measured reliability + a token budget per objective; catches regressions in flow quality/cost; quantifies whether multi-agent earns its token cost (ddoc 03 §local-model: fan-out multiplies the same model's error rate + tokens).
+- Requires (Phase 1): per-agent token usage in trace.jsonl + a session token total + a final-answer marker. A `tests/eval/run.sh` boots the server, runs the matrix, prints the table, tears down.
