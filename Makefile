@@ -17,6 +17,7 @@ include third_party/BUILD.mk
 include llama.cpp/BUILD.mk
 include whisper.cpp/BUILD.mk
 include stable-diffusion.cpp/BUILD.mk
+include llamafile/zim/BUILD.mk
 include llamafile/BUILD.mk
 include whisperfile/BUILD.mk
 include diffusionfile/BUILD.mk

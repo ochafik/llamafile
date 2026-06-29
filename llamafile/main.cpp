@@ -101,6 +101,9 @@ extern int server_main(int argc, char **argv,
                        std::function<void(const std::string &)> on_ready,
                        std::function<void(std::function<void()>)> on_shutdown_available);
 
+// `llamafile wikipedia ...` CLI (offline Wikipedia / ZIM); see wiki_cli.cpp.
+extern int wiki_cli_main(int argc, char **argv);
+
 static void print_general_help() {
     printf("llamafile v" LLAMAFILE_VERSION_STRING " - run LLMs locally\n"
            "\n"
@@ -280,6 +283,13 @@ int main(int argc, char **argv) {
     if (llamafile_has(argv, "--version")) {
         puts("llamafile v" LLAMAFILE_VERSION_STRING);
         return 0;
+    }
+
+    // `llamafile wikipedia ...` subcommand: query an offline Wikipedia (ZIM)
+    // from the CLI with no model/server. Dispatched early — it needs no model,
+    // no GPU init and no llama.cpp arg parsing.
+    if (argc > 1 && (!strcmp(argv[1], "wikipedia") || !strcmp(argv[1], "wiki"))) {
+        return wiki_cli_main(argc, argv);
     }
 
     // Diagnostic: when LLAMAFILE_TRACE_SIGNALS=1 is set, log every

@@ -149,6 +149,7 @@ LLAMAFILE_SRCS_CPP := \
 	llamafile/iqk_quantize_k.cpp \
 	llamafile/llama.cpp \
 	llamafile/string.cpp \
+	llamafile/wiki_cli.cpp \
 	llamafile/xterm.cpp \
 	$(LLAMAFILE_HIGHLIGHT_SRCS)
 
@@ -286,6 +287,7 @@ LLAMAFILE_DEPS = \
 	$(LLAMAFILE_HIGHLIGHT_KEYWORDS) \
 	$(LLAMAFILE_METAL_SOURCES) \
 	$(TINYBLAS_CPU_OBJS) \
+	$(LLAMAFILE_ZIM_OBJS) \
 	o/$(MODE)/third_party/stb/stb_image_resize2.o
 
 # ==============================================================================
