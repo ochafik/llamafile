@@ -73,6 +73,8 @@ struct wikidata_entity {
     std::string description;
     std::vector<std::string> aliases;
     std::vector<wikidata_statement> claims;
+    std::string i18n;  // raw JSON {labels,descriptions,aliases} per lang (en/fr/es/ar);
+                       // empty when the store predates the multilingual column.
 };
 
 // Open a Wikidata SQLite store read-only. Returns nullptr on failure (see

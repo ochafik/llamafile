@@ -396,6 +396,11 @@ json tool_wikidata_entity(const json & args) {
         { "aliases", e.aliases },
         { "claims", claims },
     };
+    // Multilingual labels/descriptions/aliases (en/fr/es/ar) when the store has them.
+    if (!e.i18n.empty()) {
+        json i18n = json::parse(e.i18n, nullptr, false);
+        if (!i18n.is_discarded()) out["i18n"] = i18n;
+    }
     return text_result(out.dump(2));
 }
 

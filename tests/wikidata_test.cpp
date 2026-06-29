@@ -220,6 +220,41 @@ int main(int argc, char **argv) {
         CHECK(!e.found, "missing id -> not found");
     }
 
+    // --- multilingual i18n column (newer rank-aware stores) + backward compat ---
+    {
+        // The fixture above has NO i18n column -> e.i18n must be empty.
+        wikidata_entity e0 = wikidata_get(s, "Q243");
+        CHECK(e0.i18n.empty(), "store without i18n column -> e.i18n empty (backward compat)");
+
+        // A second store WITH an i18n column -> e.i18n is exposed verbatim.
+        char p2[] = "/tmp/wikidata_i18n_XXXXXX";
+        int fd2 = mkstemp(p2);
+        if (fd2 >= 0) close(fd2);
+        sqlite3 *db2 = nullptr;
+        if (sqlite3_open(p2, &db2) == SQLITE_OK) {
+            exec(db2,
+                 "CREATE TABLE entity(id TEXT, label TEXT, description TEXT, aliases TEXT,"
+                 "  claims TEXT, i18n TEXT);"
+                 "CREATE UNIQUE INDEX entity_id ON entity(id);"
+                 "CREATE VIRTUAL TABLE fts USING fts5(label, aliases);");
+            exec(db2,
+                 "INSERT INTO entity(rowid,id,label,description,aliases,claims,i18n) VALUES"
+                 "(1,'Q31','Belgium','country','[]','[]',"
+                 " '{\"labels\":{\"en\":\"Belgium\",\"fr\":\"Belgique\",\"es\":\"Belgica\"}}');");
+            sqlite3_close(db2);
+            wikidata_store *s2 = wikidata_open(p2);
+            CHECK(s2 != nullptr, "open store with i18n column");
+            if (s2) {
+                wikidata_entity e = wikidata_get(s2, "Q31");
+                CHECK(e.found, "i18n store: get(Q31) found");
+                CHECK(e.i18n.find("Belgique") != std::string::npos,
+                      "i18n exposed on get (contains French label 'Belgique')");
+                wikidata_close(s2);
+            }
+        }
+        unlink(p2);
+    }
+
     wikidata_close(s);
     unlink(path);
 

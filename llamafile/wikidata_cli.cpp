@@ -173,6 +173,7 @@ int wikidata_cli_main(int argc, char ** argv) {
                 for (const auto & al : e.aliases) printf(" %s;", al.c_str());
                 printf("\n");
             }
+            if (!e.i18n.empty()) printf("i18n (en/fr/es/ar): %s\n", e.i18n.c_str());
             if (!e.claims.empty()) {
                 printf("claims:\n");
                 for (const auto & st : e.claims) print_statement(st, true);

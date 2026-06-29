@@ -47,6 +47,7 @@ struct wikidata_store {
     sqlite3_stmt * st_get = nullptr;    // SELECT label,description,aliases,claims WHERE id=?
     sqlite3_stmt * st_label = nullptr;  // SELECT label WHERE id=?
     sqlite3_stmt * st_search = nullptr; // FTS5 join
+    bool has_i18n = false;              // store carries the multilingual i18n JSON column
     // small cache so resolving P/Q ids inside one entity doesn't re-query.
     std::unordered_map<std::string, std::string> label_cache;
 };
@@ -357,9 +358,21 @@ wikidata_store * wikidata_open(const char * path) {
     auto * s = new wikidata_store();
     s->db = db;
 
+    // Detect the optional multilingual `i18n` column (newer rank-aware stores have
+    // it; older stores don't). Backward-compatible: select it only when present.
+    {
+        sqlite3_stmt * probe = nullptr;
+        if (sqlite3_prepare_v2(db, "SELECT i18n FROM entity LIMIT 0", -1, &probe,
+                               nullptr) == SQLITE_OK) {
+            s->has_i18n = true;
+        }
+        if (probe) sqlite3_finalize(probe);
+    }
+
     // Prepare statements. A store missing the expected schema fails loudly.
-    const char * sql_get =
-        "SELECT label, description, aliases, claims FROM entity WHERE id = ?1";
+    const char * sql_get = s->has_i18n
+        ? "SELECT label, description, aliases, claims, i18n FROM entity WHERE id = ?1"
+        : "SELECT label, description, aliases, claims FROM entity WHERE id = ?1";
     const char * sql_label = "SELECT label FROM entity WHERE id = ?1";
     const char * sql_search =
         "SELECT e.id, e.label, e.description "
@@ -463,6 +476,10 @@ wikidata_entity wikidata_get(wikidata_store * s, const std::string & id) {
         if (desc) e.description = (const char *) desc;
         if (aliases) parse_aliases((const char *) aliases, e.aliases);
         if (claims) decode_claims(s, (const char *) claims, e.claims);
+        if (s->has_i18n) {
+            const unsigned char * i18n = sqlite3_column_text(s->st_get, 4);
+            if (i18n) e.i18n = (const char *) i18n;
+        }
     }
     sqlite3_reset(s->st_get);
     return e;
