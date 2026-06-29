@@ -73,6 +73,7 @@ static TurnOutcome demo_turn(Runtime & rt, Agent & a, std::vector<Message> &) {
 
 int main() {
     std::string dir = "/tmp/llamafile_runtime_demo";
+    remove((dir + "/trace.jsonl").c_str());  // test isolation: don't accumulate events across runs
     Runtime rt;
     rt.configure("demo", dir, /*n_workers=*/8, Guards{});
     rt.set_turn_fn(demo_turn);

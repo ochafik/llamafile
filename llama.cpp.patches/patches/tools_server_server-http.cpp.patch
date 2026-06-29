@@ -1,0 +1,92 @@
+diff --git a/llama.cpp/tools/server/server-http.cpp b/llama.cpp/tools/server/server-http.cpp
+index 4f2abab00..f2935ab07 100644
+--- a/llama.cpp/tools/server/server-http.cpp
++++ b/llama.cpp/tools/server/server-http.cpp
+@@ -11,6 +11,9 @@
+ #include <string>
+ #include <thread>
+ 
++#include <pthread.h>
++#include <exception>
++
+ //
+ // HTTP implementation using cpp-httplib
+ //
+@@ -489,6 +492,50 @@ static std::string build_query_string(const httplib::Request & req) {
+ // using unique_ptr for request to allow safe capturing in lambdas
+ using server_http_req_ptr = std::unique_ptr<server_http_req>;
+ 
++// llamafile: cosmocc gives cpp-httplib worker threads a tiny (~80 KiB) stack.
++// The chat tool-call path (json-schema-to-grammar grammar build + common_chat_parse)
++// recurses deeply enough to overflow that stack and SIGBUS the whole server when
++// tools are advertised. Run the request handler on a dedicated pthread with a
++// generous 8 MiB stack (the same pattern used by webcam_agent.cpp / agent_loop.cpp /
++// mcp_host.cpp). This covers every registered get/post/del route in one place and
++// does not affect the streaming chunk provider (which runs later, unchanged).
++static server_http_res_ptr run_handler_on_big_stack(
++        const server_http_context::handler_t & handler,
++        const server_http_req & request) {
++    struct big_stack_ctx {
++        const server_http_context::handler_t & handler;
++        const server_http_req & request;
++        server_http_res_ptr response;
++        std::exception_ptr eptr;
++    } ctx{handler, request, nullptr, nullptr};
++
++    auto trampoline = [](void * arg) -> void * {
++        auto * c = static_cast<big_stack_ctx *>(arg);
++        try {
++            c->response = c->handler(c->request);
++        } catch (...) {
++            c->eptr = std::current_exception();
++        }
++        return nullptr;
++    };
++
++    pthread_attr_t attr;
++    pthread_attr_init(&attr);
++    pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
++    pthread_t tid;
++    int rc = pthread_create(&tid, &attr, trampoline, &ctx);
++    pthread_attr_destroy(&attr);
++    if (rc != 0) {
++        // could not spawn a worker; fall back to running inline (small stack)
++        return handler(request);
++    }
++    pthread_join(tid, nullptr);
++    if (ctx.eptr) {
++        std::rethrow_exception(ctx.eptr);
++    }
++    return std::move(ctx.response);
++}
++
+ static void process_handler_response(server_http_req_ptr && request, server_http_res_ptr & response, httplib::Response & res) {
+     if (response->is_stream()) {
+         res.status = response->status;
+@@ -538,7 +585,7 @@ void server_http_context::get(const std::string & path, const server_http_contex
+             {},
+             req.is_connection_closed
+         });
+-        server_http_res_ptr response = handler(*request);
++        server_http_res_ptr response = run_handler_on_big_stack(handler, *request);
+         process_handler_response(std::move(request), response, res);
+     });
+ }
+@@ -585,7 +632,7 @@ void server_http_context::post(const std::string & path, const server_http_conte
+             std::move(files),
+             req.is_connection_closed
+         });
+-        server_http_res_ptr response = handler(*request);
++        server_http_res_ptr response = run_handler_on_big_stack(handler, *request);
+         process_handler_response(std::move(request), response, res);
+     });
+ }
+@@ -602,7 +649,7 @@ void server_http_context::del(const std::string & path, const server_http_contex
+             {},
+             req.is_connection_closed
+         });
+-        server_http_res_ptr response = handler(*request);
++        server_http_res_ptr response = run_handler_on_big_stack(handler, *request);
+         process_handler_response(std::move(request), response, res);
+     });
+ }
