@@ -304,3 +304,5 @@ Tested the vendored Anthropic Messages API directly against `llamafile --server 
 - `content` blocks = `["thinking", "tool_use"]`, with `tool_use` = `search_wikipedia({"query":"Eiffel Tower"})`.
 
 This confirms the headline finding at the wire level: **Claude Code can use llamafile as a backend** via `ANTHROPIC_BASE_URL=http://host:port` + a dummy `ANTHROPIC_AUTH_TOKEN` + `--jinja`, including native tool-calling (and thinking blocks). Remaining for a full CC session: verify the multi-turn `tool_result` round-trip through `/v1/messages` and beta-header tolerance — but the core protocol + tool_use path works today. CC-dropin is no longer "~80% built" speculation; the tool round-trip's first half is empirically validated.
+
+**UPDATE — turn-2 verified too:** fed an Anthropic `tool_result` block back via `/v1/messages` → `stop_reason:"end_turn"`, grounded answer ("…the Eiffel Tower is 330 meters (1,083 feet) tall…"). The **full multi-turn Anthropic tool round-trip works through llamafile** — CC drop-in validated end-to-end at the protocol level (remaining: real CC-CLI session smoke + beta-header tolerance).
