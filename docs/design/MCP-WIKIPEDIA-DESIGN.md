@@ -77,8 +77,12 @@ Built a minimal MCP client (`scratchpad/mcpproto/mcp_client.cpp`, ~110 lines) wi
 - `initialize` → `server=stub-mcp protocol=2025-06-18`; `notifications/initialized` (notify, no reply); `tools/list` → `echo`; `tools/call echo` → `"echo: hello from cosmocc MCP client"`; clean server exit 0.
 - Confirms: cosmocc subprocess+pipe IPC + newline-framed JSON-RPC with nlohmann all work → the MCP stdio transport is viable. (HTTP/SSE transport still relies on `cpp-httplib SSEClient`, untested but lower-risk.)
 
-### P2 — native model→tool round-trip — IN PROGRESS
-Downloading `unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` (UD/Unsloth-Dynamic, 22GB; arch `qwen35moe`, supported by the vendored llama.cpp). Plan: run `llamafile --server --jinja` + POST `/v1/chat/completions` with a `search_wikipedia` tool def + a triggering prompt; confirm `finish_reason:"tool_calls"` + a parsed `tool_call` (proves the native tool-calling the `wikifile` effort lacked, on a real tool-capable model).
+### P2 — native model→tool round-trip — ✅ VALIDATED (2026-06-29)
+`llamafile --server --jinja` with `Qwen3.6-35B-A3B-UD-Q4_K_M` (arch `qwen35moe`, loaded clean; auto-created **4 continuous-batching slots** @ n_ctx=262144).
+- Turn 1: POST `/v1/chat/completions` with a `search_wikipedia` tool def + triggering prompt → **`finish_reason:"tool_calls"`** with `search_wikipedia({"query":"Eiffel Tower height"})` — a correct, well-formed call.
+- Turn 2: fed a `role:"tool"` result back → model produced a grounded final answer ("According to Wikipedia, the Eiffel Tower is 330 metres…", `finish_reason:"stop"`).
+- **This is exactly what `wikifile` couldn't do.** The full search→result→answer agentic loop works natively. Wiring a real `wiki_search` `server_tool` to the validated ZIM reader (P1) completes the feature.
+- **Deployment finding**: the combined `llamafile` binary's front-end **rejects `-np`/`--parallel`** ("invalid argument: N") even though `--server --help` lists it — but it auto-defaults to 4 slots, so continuous batching works. Bumping slots needs a front-end arg-passthrough fix (or use the standalone `llama-server` build target). Tracked for the multi-agent deployment.
 
 ## 8. Phased implementation (after prototypes pass)
 1. Port `llamafile/zim/` + `--zim` + `/zim/*` endpoints (reader only). Gate: open a ZIM, search, fetch.
