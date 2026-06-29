@@ -128,6 +128,7 @@ LLAMAFILE_SRCS_C := \
 	llamafile/zip.c
 
 LLAMAFILE_SRCS_CPP := \
+	llamafile/agent_loop.cpp \
 	llamafile/args.cpp \
 	llamafile/browser_tool.cpp \
 	llamafile/chatbot_api.cpp \
@@ -312,6 +313,14 @@ o/$(MODE)/llamafile/server.cpp.o: llama.cpp/tools/server/server.cpp
 # registers them into the server's /tools registry, so it needs the server
 # include path (server-tools.h) like server.cpp does.
 o/$(MODE)/llamafile/mcp_host.o: llamafile/mcp_host.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(LLAMAFILE_CPPFLAGS) $(LLAMAFILE_SERVER_INCS) -c -o $@ $<
+
+# agent_loop.cpp: multi-agent orchestration (sub-agents-as-tools). It derives
+# delegate tools from server_tool and runs a server-side agentic loop over
+# loopback HTTP (cpp-httplib), so it needs the server include path (server-tools.h)
+# like server.cpp / mcp_host.cpp do.
+o/$(MODE)/llamafile/agent_loop.o: llamafile/agent_loop.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(LLAMAFILE_CPPFLAGS) $(LLAMAFILE_SERVER_INCS) -c -o $@ $<
 

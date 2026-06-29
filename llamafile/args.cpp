@@ -19,6 +19,7 @@
 #include "args.h"
 #include "llamafile.h"
 #include "mcp_host.h"
+#include "agent_loop.h"
 
 #include <cstring>
 #include <string>
@@ -99,6 +100,14 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
                 llamafile_mcp_add_server(argv[i + 1]);
                 ++i;
             }
+            continue;
+        }
+
+        // --agents: register the delegate_to_<role> sub-agent tools (multi-agent
+        // orchestration via sub-agents-as-tools). llamafile-owned flag; consumed
+        // here so it never reaches llama.cpp's parser.
+        if (strcmp(arg, "--agents") == 0) {
+            llamafile_agents_enable();
             continue;
         }
 

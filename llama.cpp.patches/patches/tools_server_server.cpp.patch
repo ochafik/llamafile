@@ -1,5 +1,5 @@
 diff --git a/llama.cpp/tools/server/server.cpp b/llama.cpp/tools/server/server.cpp
-index bf3680b9f..dbe6ab9fd 100644
+index bf3680b9f..f07896513 100644
 --- a/llama.cpp/tools/server/server.cpp
 +++ b/llama.cpp/tools/server/server.cpp
 @@ -14,6 +14,7 @@
@@ -10,7 +10,7 @@ index bf3680b9f..dbe6ab9fd 100644
  #include <signal.h>
  #include <thread> // for std::thread::hardware_concurrency
  
-@@ -21,6 +22,18 @@
+@@ -21,6 +22,25 @@
  #include <windows.h>
  #endif
  
@@ -24,12 +24,19 @@ index bf3680b9f..dbe6ab9fd 100644
 +// (defined in llamafile/mcp_host.cpp; only linked into the llamafile binary)
 +int  llamafile_mcp_server_count();
 +int  llamafile_mcp_register_tools(server_tools & registry);
++// llamafile MULTI-AGENT: register delegate_to_<role> sub-agent tools into /tools.
++// (defined in llamafile/agent_loop.cpp; only linked into the llamafile binary)
++bool llamafile_agents_enabled();
++void llamafile_agents_set_endpoint(const std::string & host, int port,
++                                   const std::string & api_key,
++                                   const std::string & model, int n_parallel);
++int  llamafile_agents_register_tools(server_tools & registry);
 +#endif
 +
  static std::function<void(int)> shutdown_handler;
  static std::atomic_flag is_terminating = ATOMIC_FLAG_INIT;
  
-@@ -71,15 +84,26 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t
+@@ -71,15 +91,26 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t
      };
  }
  
@@ -60,7 +67,7 @@ index bf3680b9f..dbe6ab9fd 100644
      common_init();
  
      if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
-@@ -239,13 +263,28 @@ int llama_server(int argc, char ** argv) {
+@@ -239,13 +270,48 @@ int llama_server(int argc, char ** argv) {
          ctx_http.post("/cors-proxy",      ex_wrapper(proxy_handler_post));
      }
      // EXPERIMENTAL built-in tools
@@ -68,8 +75,10 @@ index bf3680b9f..dbe6ab9fd 100644
 +    bool enable_tools = !params.server_tools.empty();
 +#ifdef LLAMAFILE_TUI
 +    // llamafile: also stand up /tools if external MCP servers are configured
-+    // (--mcp), even when no built-in tools (--tools) were requested.
-+    enable_tools = enable_tools || llamafile_mcp_server_count() > 0;
++    // (--mcp) or sub-agents are requested (--agents), even when no built-in
++    // tools (--tools) were requested.
++    enable_tools = enable_tools || llamafile_mcp_server_count() > 0
++                                || llamafile_agents_enabled();
 +#endif
 +    if (enable_tools) {
          try {
@@ -86,11 +95,29 @@ index bf3680b9f..dbe6ab9fd 100644
 +        if (n_mcp > 0) {
 +            SRV_INF("mcp-host: bridged %d external MCP tool(s) into /tools\n", n_mcp);
 +        }
++        // llamafile MULTI-AGENT: register delegate_to_<role> sub-agent tools.
++        // Each runs its own server-side agentic loop against this same server's
++        // /v1/chat/completions + /tools (loopback), so the existing agentic loop
++        // (web UI / CLI / any client) becomes a multi-agent orchestrator with no
++        // frontend change. Registered AFTER built-ins + MCP so role allow-lists
++        // can see every available leaf tool.
++        if (llamafile_agents_enabled()) {
++            llamafile_agents_set_endpoint(
++                params.hostname, params.port,
++                params.api_keys.empty() ? std::string() : params.api_keys.front(),
++                params.model_alias.empty() ? std::string("default")
++                                           : *params.model_alias.begin(),
++                params.n_parallel);
++            int n_agents = llamafile_agents_register_tools(tools);
++            if (n_agents > 0) {
++                SRV_INF("agents: registered %d delegate sub-agent tool(s) into /tools\n", n_agents);
++            }
++        }
 +#endif
          SRV_WRN("%s", "-----------------\n");
          SRV_WRN("%s", "Built-in tools are enabled, do not expose server to untrusted environments\n");
          SRV_WRN("%s", "This feature is EXPERIMENTAL and may be changed in the future\n");
-@@ -332,6 +371,13 @@ int llama_server(int argc, char ** argv) {
+@@ -332,6 +398,13 @@ int llama_server(int argc, char ** argv) {
              // this will unblock start_loop()
              ctx_server.terminate();
          };
@@ -104,7 +131,7 @@ index bf3680b9f..dbe6ab9fd 100644
      }
  
      // TODO: refactor in common/console
-@@ -368,6 +414,11 @@ int llama_server(int argc, char ** argv) {
+@@ -368,6 +441,11 @@ int llama_server(int argc, char ** argv) {
      } else {
          SRV_INF("server is listening on %s\n", ctx_http.listening_address.c_str());
  
@@ -116,7 +143,7 @@ index bf3680b9f..dbe6ab9fd 100644
          // optionally, notify router server that this instance is ready
          std::thread monitor_thread;
          if (child.is_child()) {
-@@ -392,5 +443,48 @@ int llama_server(int argc, char ** argv) {
+@@ -392,5 +470,48 @@ int llama_server(int argc, char ** argv) {
          }
      }
  
