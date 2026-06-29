@@ -1,0 +1,178 @@
+diff --git a/llama.cpp/tools/server/server-tools.cpp b/llama.cpp/tools/server/server-tools.cpp
+index 95662d4ec..dd5b47d02 100644
+--- a/llama.cpp/tools/server/server-tools.cpp
++++ b/llama.cpp/tools/server/server-tools.cpp
+@@ -15,6 +15,54 @@
+ 
+ namespace fs = std::filesystem;
+ 
++//
++// llamafile path jail (SECURITY)
++//
++// Every path the built-in file tools touch is confined to a root directory:
++// the server's cwd by default, overridable via --tools-root DIR. The root is
++// owned by llamafile (defined in llamafile/args.cpp) and read here across the
++// link boundary, mirroring the multi-agent hooks in server.cpp.
++//
++
++std::string llamafile_tools_root(); // defined in llamafile/args.cpp
++
++// Resolve `in` against the jail root and canonicalize it (normalizing "."/".."
++// and resolving symlinks for the portion of the path that exists). On success
++// returns true with `out` set to the absolute canonical path. On escape or
++// error returns false with a human-readable reason in `err`.
++static bool jail_resolve(const std::string & in, std::string & out, std::string & err) {
++    std::error_code ec;
++    fs::path root = fs::weakly_canonical(fs::path(llamafile_tools_root()), ec);
++    if (ec || root.empty()) {
++        root = fs::path(llamafile_tools_root());
++    }
++
++    fs::path p(in);
++    if (p.is_relative()) {
++        p = root / p;
++    }
++
++    ec.clear();
++    fs::path canon = fs::weakly_canonical(p, ec);
++    if (ec || canon.empty()) {
++        canon = p.lexically_normal();
++    }
++
++    // containment: canon must be root itself or strictly below it
++    const std::string rel = canon.lexically_relative(root).generic_string();
++    const bool inside = !rel.empty()
++                     && rel != ".."
++                     && rel.rfind("../", 0) != 0; // does not start with "../"
++    if (!inside) {
++        err = "path '" + in + "' escapes the tools root (" + root.string() +
++              "). Use a path inside the root, or start the server with --tools-root.";
++        return false;
++    }
++
++    out = canon.string();
++    return true;
++}
++
+ //
+ // internal helpers
+ //
+@@ -155,6 +203,12 @@ struct server_tool_read_file : server_tool {
+         int  end_line     = json_value(params, "end_line",  -1); // -1 = no limit
+         bool append_loc   = json_value(params, "append_loc", false);
+ 
++        {
++            std::string resolved, jerr;
++            if (!jail_resolve(path, resolved, jerr)) return {{"error", jerr}};
++            path = resolved;
++        }
++
+         std::error_code ec;
+         uintmax_t file_size = fs::file_size(path, ec);
+         if (ec) {
+@@ -235,6 +289,12 @@ struct server_tool_file_glob_search : server_tool {
+         std::string include = json_value(params, "include", std::string("**"));
+         std::string exclude = json_value(params, "exclude", std::string(""));
+ 
++        {
++            std::string resolved, jerr;
++            if (!jail_resolve(base, resolved, jerr)) return {{"error", jerr}};
++            base = resolved;
++        }
++
+         std::ostringstream output_text;
+         size_t count = 0;
+ 
+@@ -303,6 +363,12 @@ struct server_tool_grep_search : server_tool {
+         std::string exclude = json_value(params, "exclude", std::string(""));
+         bool show_lineno    = json_value(params, "return_line_numbers", false);
+ 
++        {
++            std::string resolved, jerr;
++            if (!jail_resolve(path, resolved, jerr)) return {{"error", jerr}};
++            path = resolved;
++        }
++
+         std::regex pattern;
+         try {
+             pattern = std::regex(pat_str);
+@@ -451,6 +517,12 @@ struct server_tool_write_file : server_tool {
+         std::string path    = params.at("path").get<std::string>();
+         std::string content = params.at("content").get<std::string>();
+ 
++        {
++            std::string resolved, jerr;
++            if (!jail_resolve(path, resolved, jerr)) return {{"error", jerr}};
++            path = resolved;
++        }
++
+         std::error_code ec;
+         fs::path fpath(path);
+         if (fpath.has_parent_path()) {
+@@ -526,6 +598,12 @@ struct server_tool_edit_file : server_tool {
+         std::string path = params.at("path").get<std::string>();
+         const json & changes = params.at("changes");
+ 
++        {
++            std::string resolved, jerr;
++            if (!jail_resolve(path, resolved, jerr)) return {{"error", jerr}};
++            path = resolved;
++        }
++
+         if (!changes.is_array()) {
+             return {{"error", "\"changes\" must be an array"}};
+         }
+@@ -670,6 +748,26 @@ struct server_tool_apply_diff : server_tool {
+     json invoke(json params) override {
+         std::string diff = params.at("diff").get<std::string>();
+ 
++        // jail: every file the diff touches must resolve inside the tools root.
++        // git apply paths look like "--- a/foo" / "+++ b/foo" (default -p1).
++        {
++            std::istringstream ds(diff);
++            std::string line, jerr;
++            while (std::getline(ds, line)) {
++                if (line.rfind("--- ", 0) != 0 && line.rfind("+++ ", 0) != 0) continue;
++                std::string p = line.substr(4);
++                if (!p.empty() && p.back() == '\r') p.pop_back();
++                auto tab = p.find('\t');
++                if (tab != std::string::npos) p = p.substr(0, tab);
++                if (p.empty() || p == "/dev/null") continue;
++                if (p.rfind("a/", 0) == 0 || p.rfind("b/", 0) == 0) p = p.substr(2);
++                std::string resolved;
++                if (!jail_resolve(p, resolved, jerr)) {
++                    return {{"error", "apply_diff: " + jerr}};
++                }
++            }
++        }
++
+         // write diff to a temporary file
+         static std::atomic<int> counter{0};
+         std::string tmp_path = (fs::temp_directory_path() /
+@@ -683,7 +781,25 @@ struct server_tool_apply_diff : server_tool {
+             f << diff;
+         }
+ 
+-        auto res = run_process({"git", "apply", tmp_path}, 4096, 10);
++        // Run git apply with the jail root as the child's working directory so
++        // the (already jail-checked) relative diff paths resolve under the root
++        // even when the server cwd differs from --tools-root. We can't pass
++        // --directory=<abs> (git rejects the resulting absolute path), so we
++        // cd into the root in a child shell; tmp_path is absolute.
++        auto sh_quote = [](const std::string & s) {
++            std::string out = "'";
++            for (char c : s) { if (c == '\'') out += "'\\''"; else out += c; }
++            out += "'";
++            return out;
++        };
++        std::string root = llamafile_tools_root();
++#ifdef _WIN32
++        std::string cmd = "cd /d \"" + root + "\" && git apply \"" + tmp_path + "\"";
++        auto res = run_process({"cmd", "/c", cmd}, 4096, 10);
++#else
++        std::string cmd = "cd " + sh_quote(root) + " && git apply " + sh_quote(tmp_path);
++        auto res = run_process({"sh", "-c", cmd}, 4096, 10);
++#endif
+ 
+         std::error_code ec;
+         fs::remove(tmp_path, ec);

@@ -22,8 +22,42 @@
 #include "agent_loop.h"
 
 #include <cstring>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
+
+// ---------------------------------------------------------------------------
+// File-tool path jail root (SECURITY)
+//
+// The built-in server file tools (read_file/write_file/edit_file/apply_diff/
+// file_glob_search/grep_search in llama.cpp/tools/server/server-tools.cpp)
+// confine every path they touch to this root directory. It defaults to the
+// server's current working directory and is overridable via --tools-root DIR.
+//
+// These two symbols live in the global namespace so server-tools.cpp can call
+// llamafile_tools_root() across the llamafile<->llama.cpp link boundary (the
+// same pattern the multi-agent hooks use, see server.cpp).
+// ---------------------------------------------------------------------------
+static std::string g_tools_root;
+
+void llamafile_set_tools_root(const char * dir) {
+    std::error_code ec;
+    std::filesystem::path p = std::filesystem::weakly_canonical(std::filesystem::path(dir), ec);
+    if (ec || p.empty()) {
+        p = std::filesystem::absolute(std::filesystem::path(dir), ec);
+    }
+    g_tools_root = p.empty() ? std::string(dir) : p.string();
+}
+
+std::string llamafile_tools_root() {
+    if (g_tools_root.empty()) {
+        std::error_code ec;
+        std::filesystem::path p = std::filesystem::current_path(ec);
+        g_tools_root = ec ? std::string(".") : p.string();
+    }
+    return g_tools_root;
+}
 
 namespace lf {
 
@@ -44,6 +78,10 @@ static bool is_llamafile_flag(const char* arg) {
 
 LlamafileArgs parse_llamafile_args(int argc, char** argv) {
     LlamafileArgs args;
+
+    // Lock in the file-tool jail root to the startup cwd (unless --tools-root
+    // overrides it below). Captured early so a later chdir can't widen it.
+    (void) ::llamafile_tools_root();
 
     // Early GPU init must happen before we filter args
     // This reads --gpu and -ngl flags to set FLAG_gpu
@@ -98,6 +136,17 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
         if (strcmp(arg, "--mcp") == 0) {
             if (i + 1 < argc) {
                 llamafile_mcp_add_server(argv[i + 1]);
+                ++i;
+            }
+            continue;
+        }
+
+        // --tools-root DIR: confine the built-in server file tools to DIR
+        // (default: the server's cwd). llamafile-owned security flag; consumed
+        // here so it never reaches llama.cpp's parser.
+        if (strcmp(arg, "--tools-root") == 0) {
+            if (i + 1 < argc) {
+                llamafile_set_tools_root(argv[i + 1]);
                 ++i;
             }
             continue;
