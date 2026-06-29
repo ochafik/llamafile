@@ -79,3 +79,26 @@ Doc set: 01 mcp-wikipedia · 02 multiagent-webui · 03 best-practices · 04 brow
 - → **One SQLite file unifies exact + FTS5 + vector; one embedding path; zero new deps.**
 
 **Build order progress:** 1 wiki ✅ → MCP server ✅ → **browser_* (CDP) [in progress]** → server-side agentic loop / server-side tools → multi-agent web UI → harden (file-tool path-jail) → [queued] video webcam-agent (`~/github/llama.cpp-video-ddocs/`, derisked, rides this stack).
+
+---
+
+## ✅ FINAL STATUS — initial vision COMPLETE (2026-06-29)
+One portable `llamafile` (`origin/upgrade-2026`; llama.cpp pristine except the scripted patch layer). All runtime-verified:
+
+| Capability | How | Status |
+|---|---|---|
+| **Offline Wikipedia** | `wiki_search`/`wiki_get_article`; full 49GB ZIM @0.01s resident; `llamafile wikipedia` CLI | ✅ |
+| **Structured facts (Wikidata)** | `wikidata_search`/`_entity`/`_property` over SQLite+FTS5 (113M ent.); `llamafile wikidata` CLI | ✅ (full 68GB store building) |
+| **Live web** | `browser_*` in-process CDP (LAUNCH + ATTACH-your-browser), SSRF-guarded | ✅ |
+| **MCP server** | `llamafile mcp-server` exposes tools to CC/opencode/Cursor | ✅ |
+| **MCP host** | `--mcp '<cmd>'` bridges external servers' tools into `/tools` + web UI | ✅ |
+| **Claude Code drop-in** | Anthropic `/v1/messages` (full multi-turn tool round-trip) | ✅ |
+| **Multi-agent** | `delegate_to_researcher/ideator/verifier` = sub-agents-as-tools (server-side loops); web UI/CLI/CC become orchestrators, no frontend change | ✅ |
+| **Web UI** | embedded (fetch unblocked); agenticStore consumes `/tools` | ✅ serving |
+| **Video webcam-agent** | `--webcam-agent` `/agent/*` SSE + embedded UI; watch→witness→act (fires MCP tool, e.g. send_email) + 30s clip/live relay | ✅ |
+| **Search strategy** | FTS5 + LLM query-expansion (parallel OR'd terms); embeddings deferred | ✅ |
+| **Security** | file-tool cwd path-jail (`--tools-root`); `-np 8` batching | ✅ |
+
+**Design principle that held throughout:** every capability is a llamafile-owned module exposing one handler across surfaces (CLI / mcp-server / /tools / web UI / MCP), so **llama.cpp stayed pristine** (only `#ifdef LLAMAFILE_TUI` hooks + the scripted patch layer).
+
+**Remaining = optional polish:** full Wikidata store finishing its background build · Wikidata ETL fidelity (best-rank/unit-normalize) + search tiebreak · Wikipedia FTS5 sidecar (full-text vs title) · multi-agent web-UI lane visualization (Svelte source build) · server-side auto-inject of the clip URL into `send_email` args · hybrid-model `ignore_frame` attention-only KV trim (needs a submodule patch) · GPU/Metal is the interactive-speed lever (video already runs on Metal).
