@@ -61,7 +61,13 @@ pick_ui_tag() {
             | grep -oE '<[^>]+>; *rel="next"' | grep -oE 'https?://[^>]+' | head -1)"
     done
     rm -f "$hdrs"
-    [ -n "$best" ] && printf 'b%s' "$best"
+    # NOTE: must return 0 even when nothing matched. The caller assigns this in
+    # `UI_BEST_TAG="$(pick_ui_tag ...)"`, and under `set -e` a non-zero exit from
+    # the command substitution aborts the whole script -- which used to kill the
+    # fetch right here (our pinned build predates every tag in the bucket, so
+    # `best` is always empty) before the "latest" fallback below could run.
+    if [ -n "$best" ]; then printf 'b%s' "$best"; fi
+    return 0
 }
 
 # Build the dist/_gzip/ mirror: every regular file under dist/, gzip-compressed
@@ -128,7 +134,7 @@ UI_CUR_BUILD="$(cd "$LLAMA_DIR" && git describe --tags --always 2>/dev/null \
 UI_CANDIDATES=()
 if [ -n "$UI_CUR_BUILD" ]; then
     echo "  resolving newest UI tag <= b$UI_CUR_BUILD ..."
-    UI_BEST_TAG="$(pick_ui_tag "$UI_CUR_BUILD")"
+    UI_BEST_TAG="$(pick_ui_tag "$UI_CUR_BUILD")" || true
     if [ -n "$UI_BEST_TAG" ]; then
         echo "  selected UI tag $UI_BEST_TAG"
         UI_CANDIDATES+=("$UI_BEST_TAG")
