@@ -10,6 +10,8 @@
 #   1. The new C/C++ unit tests in the `make check` graph (built with cosmocc):
 #        - zim_reader_test   (llamafile/zim, two tiny real ZIMs v5+v6)
 #        - wikidata_test     (llamafile/wikidata, self-built SQLite+FTS5 fixture)
+#        - wiki_fts_test     (llamafile/wiki_fts, builds an FTS5 sidecar from the
+#                             tiny ZIM fixture, then full-text-searches bodies)
 #        - path_jail_test    (llamafile/path_jail.h, server-tools jail logic)
 #   2. The vlib-video unit tests (tool-parser / pixel-diff / mrope / pair-pack).
 #   3. The MCP server protocol integration test (spawns `llamafile mcp-server`;
@@ -28,6 +30,7 @@ echo "########################################################"
 "$MAKE" -j8 \
     "${MODE_DIR}/tests/zim_reader_test" \
     "${MODE_DIR}/tests/wikidata_test" \
+    "${MODE_DIR}/tests/wiki_fts_test" \
     "${MODE_DIR}/tests/path_jail_test" \
     "${MODE_DIR}/tests/agent_runtime_test" \
     "${MODE_DIR}/tests/agent_runtime_sched_test" \
@@ -35,6 +38,7 @@ echo "########################################################"
     "${MODE_DIR}/tests/agent_session_test"
 "${MODE_DIR}/tests/zim_reader_test"
 "${MODE_DIR}/tests/wikidata_test"
+"${MODE_DIR}/tests/wiki_fts_test"
 "${MODE_DIR}/tests/path_jail_test"
 "${MODE_DIR}/tests/agent_runtime_test"
 "${MODE_DIR}/tests/agent_runtime_sched_test"

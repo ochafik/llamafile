@@ -162,6 +162,7 @@ LLAMAFILE_SRCS_CPP := \
 	llamafile/webcam_agent.cpp \
 	llamafile/string.cpp \
 	llamafile/wiki_cli.cpp \
+	llamafile/wiki_fts.cpp \
 	llamafile/wikidata.cpp \
 	llamafile/wikidata_cli.cpp \
 	llamafile/xterm.cpp \

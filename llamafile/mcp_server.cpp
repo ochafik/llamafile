@@ -34,6 +34,7 @@
 #include "zim/zim.h"
 
 #include "browser_tool.h"
+#include "wiki_fts.h"
 #include "wikidata.h"
 
 #include <cstdio>
@@ -76,6 +77,7 @@ struct Tool {
 std::vector<Tool> g_tools;
 zim_archive *     g_zim = nullptr;
 wikidata_store *  g_wd = nullptr;
+wiki_fts_store *  g_fts = nullptr;
 
 const Tool * find_tool(const std::string & name) {
     for (const auto & t : g_tools) {
@@ -262,6 +264,61 @@ void register_wiki_tools() {
             { "required", json::array({ "title" }) },
         },
         tool_wiki_get_article,
+    });
+}
+
+// -----------------------------------------------------------------
+// Tool: wiki_fulltext_search (article BODIES; SQLite+FTS5 sidecar, wiki_fts.cpp)
+// -----------------------------------------------------------------
+
+json tool_wiki_fulltext_search(const json & args) {
+    if (!args.contains("query") || !args["query"].is_string()) {
+        return text_result("error: missing required string argument 'query'", true);
+    }
+    std::string query = args["query"].get<std::string>();
+    int limit = 5;
+    if (args.contains("limit") && args["limit"].is_number_integer()) {
+        limit = args["limit"].get<int>();
+    }
+    if (limit < 1)  limit = 1;
+    if (limit > 50) limit = 50;
+
+    std::vector<wiki_fts_hit> hits = wiki_fulltext_search(g_fts, query, limit);
+    if (hits.empty()) {
+        return text_result("No results for \"" + query + "\".");
+    }
+    json out = json::array();
+    for (const auto & h : hits) {
+        out.push_back(json{
+            { "title",   h.title },
+            { "path",    h.path },
+            { "snippet", h.snippet },
+        });
+    }
+    return text_result(out.dump(2));
+}
+
+void register_wiki_fts_tools() {
+    g_tools.push_back(Tool{
+        "wiki_fulltext_search",
+        "Full-text search the offline Wikipedia over article BODIES (not just "
+        "titles, as wiki_search does). Finds articles by words that appear inside "
+        "the prose. Returns a JSON list of {title, path, snippet} hits, where "
+        "snippet is a context excerpt with matches in [brackets]. Pass the "
+        "returned title or path to wiki_get_article to read the full article. "
+        "Plain words match as an implicit AND; you may also issue an FTS5 boolean "
+        "expression (e.g. \"lattice OR truss\", \"body:eiffel\").",
+        json{
+            { "type", "object" },
+            { "properties", json{
+                { "query", json{ { "type", "string" },
+                                 { "description", "Search terms found anywhere in the article body (or an FTS5 expression)." } } },
+                { "limit", json{ { "type", "integer" },
+                                 { "description", "Maximum number of results (default 5, max 50)." } } },
+            } },
+            { "required", json::array({ "query" }) },
+        },
+        tool_wiki_fulltext_search,
     });
 }
 
@@ -532,6 +589,10 @@ void mcp_server_usage(FILE * f) {
         "  --wikidata PATH    path to a Wikidata .sqlite store (default:\n"
         "                     $LLAMAFILE_WIKIDATA); enables wikidata_search /\n"
         "                     wikidata_entity / wikidata_property.\n"
+        "  --wiki-fts PATH    path to a Wikipedia full-text sidecar (default:\n"
+        "                     $LLAMAFILE_WIKI_FTS); enables wiki_fulltext_search\n"
+        "                     (search article bodies, not just titles). Build one\n"
+        "                     with `llamafile wikipedia index <zim> <out.sqlite>`.\n"
         "  --browser          expose the browser_* tools AND the code interpreter\n"
         "                     (code_run_js / code_render_html) via in-process CDP;\n"
         "                     LAUNCH a headless Chrome on demand. OFF by default.\n"
@@ -557,6 +618,7 @@ int mcp_server_main(int argc, char ** argv) {
     // argv: [0]=llamafile [1]=mcp-server [...]=args
     const char * zim_path = nullptr;
     const char * wikidata_path = nullptr;
+    const char * wiki_fts_path = nullptr;
     bool zim_explicit = false;
     browser::Options bopts;
 
@@ -566,6 +628,8 @@ int mcp_server_main(int argc, char ** argv) {
             zim_explicit = true;
         } else if (!strcmp(argv[i], "--wikidata") && i + 1 < argc) {
             wikidata_path = argv[++i];
+        } else if (!strcmp(argv[i], "--wiki-fts") && i + 1 < argc) {
+            wiki_fts_path = argv[++i];
         } else if (!strcmp(argv[i], "--browser")) {
             bopts.enabled = true;
         } else if (!strcmp(argv[i], "--browser-attach")) {
@@ -615,6 +679,18 @@ int mcp_server_main(int argc, char ** argv) {
                 zim_path, zim_error());
     }
 
+    // Wikipedia full-text sidecar (SQLite+FTS5 over article bodies).
+    if (!wiki_fts_path) wiki_fts_path = getenv("LLAMAFILE_WIKI_FTS");
+    if (wiki_fts_path) {
+        g_fts = wiki_fts_open(wiki_fts_path);
+        if (g_fts) {
+            register_wiki_fts_tools();
+        } else {
+            fprintf(stderr, "mcp-server: failed to open full-text sidecar '%s': %s\n",
+                    wiki_fts_path, wiki_fts_error());
+        }
+    }
+
     // Wikidata structured-fact store (SQLite+FTS5).
     if (!wikidata_path) wikidata_path = getenv("LLAMAFILE_WIKIDATA");
     if (wikidata_path) {
@@ -636,7 +712,7 @@ int mcp_server_main(int argc, char ** argv) {
 
     if (g_tools.empty()) {
         fprintf(stderr, "mcp-server: no tools enabled. Pass --zim PATH, "
-                        "--wikidata PATH and/or --browser.\n");
+                        "--wiki-fts PATH, --wikidata PATH and/or --browser.\n");
         return 1;
     }
 
@@ -677,6 +753,7 @@ int mcp_server_main(int argc, char ** argv) {
 
     zim_close(g_zim);
     g_zim = nullptr;
+    if (g_fts) { wiki_fts_close(g_fts); g_fts = nullptr; }
     if (g_wd) { wikidata_close(g_wd); g_wd = nullptr; }
     return 0;
 }

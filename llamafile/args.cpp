@@ -163,6 +163,23 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
             continue;
         }
 
+        // --wiki-fts PATH: enable the offline Wikipedia full-text tool
+        // (wiki_fulltext_search, article bodies) in --server mode by bridging it
+        // in via our own mcp-server subprocess (same path as a manual
+        // `--mcp 'llamafile mcp-server --wiki-fts …'`), so it lands in the /tools
+        // registry alongside the wiki_* title tools. Consumed here so it never
+        // reaches llama.cpp's parser.
+        if (strcmp(arg, "--wiki-fts") == 0) {
+            if (i + 1 < argc) {
+                std::string self = (argc > 0 && argv[0]) ? argv[0] : "llamafile";
+                std::string cmd = "'" + self + "' mcp-server --wiki-fts '" +
+                                  std::string(argv[i + 1]) + "'";
+                llamafile_mcp_add_server(cmd);
+                ++i;
+            }
+            continue;
+        }
+
         // --tools-root DIR: confine the built-in server file tools to DIR
         // (default: the server's cwd). llamafile-owned security flag; consumed
         // here so it never reaches llama.cpp's parser.
