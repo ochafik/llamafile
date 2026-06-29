@@ -143,6 +143,22 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
             continue;
         }
 
+        // --wikidata PATH: enable the offline Wikidata fact tools (wikidata_*)
+        // in --server mode by bridging them in via our own mcp-server subprocess
+        // (the same path as a manual `--mcp 'llamafile mcp-server --wikidata …'`),
+        // so they land in the /tools registry alongside the wiki_* tools.
+        // Consumed here so it never reaches llama.cpp's parser.
+        if (strcmp(arg, "--wikidata") == 0) {
+            if (i + 1 < argc) {
+                std::string self = (argc > 0 && argv[0]) ? argv[0] : "llamafile";
+                std::string cmd = "'" + self + "' mcp-server --wikidata '" +
+                                  std::string(argv[i + 1]) + "'";
+                llamafile_mcp_add_server(cmd);
+                ++i;
+            }
+            continue;
+        }
+
         // --tools-root DIR: confine the built-in server file tools to DIR
         // (default: the server's cwd). llamafile-owned security flag; consumed
         // here so it never reaches llama.cpp's parser.

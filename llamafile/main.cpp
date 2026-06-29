@@ -107,6 +107,9 @@ extern int wiki_cli_main(int argc, char **argv);
 // `llamafile mcp-server ...` — MCP server over stdio; see mcp_server.cpp.
 extern int mcp_server_main(int argc, char **argv);
 
+// `llamafile wikidata ...` CLI (offline Wikidata fact store); see wikidata_cli.cpp.
+extern int wikidata_cli_main(int argc, char **argv);
+
 // `llamafile mtmd-video-cli ...` — browser-free continuous-video VLM session
 // harness (folder of JPEGs -> per-frame tool calls); see mtmd_video_cli.cpp.
 extern int mtmd_video_cli_main(int argc, char **argv);
@@ -297,6 +300,13 @@ int main(int argc, char **argv) {
     // no GPU init and no llama.cpp arg parsing.
     if (argc > 1 && (!strcmp(argv[1], "wikipedia") || !strcmp(argv[1], "wiki"))) {
         return wiki_cli_main(argc, argv);
+    }
+
+    // `llamafile wikidata ...` subcommand: query an offline Wikidata structured-
+    // fact store (SQLite+FTS5) from the CLI with no model/server. Dispatched
+    // early — it needs no model, no GPU init and no llama.cpp arg parsing.
+    if (argc > 1 && !strcmp(argv[1], "wikidata")) {
+        return wikidata_cli_main(argc, argv);
     }
 
     // `llamafile mcp-server [--zim PATH]` subcommand: run an MCP server over

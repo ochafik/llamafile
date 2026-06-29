@@ -159,6 +159,8 @@ LLAMAFILE_SRCS_CPP := \
 	llamafile/webcam_agent.cpp \
 	llamafile/string.cpp \
 	llamafile/wiki_cli.cpp \
+	llamafile/wikidata.cpp \
+	llamafile/wikidata_cli.cpp \
 	llamafile/xterm.cpp \
 	$(LLAMAFILE_HIGHLIGHT_SRCS)
 
@@ -305,6 +307,7 @@ LLAMAFILE_DEPS = \
 	$(LLAMAFILE_WEBCAM_UI_ASSETS) \
 	$(TINYBLAS_CPU_OBJS) \
 	$(LLAMAFILE_ZIM_OBJS) \
+	o/$(MODE)/third_party/sqlite/sqlite3.o \
 	o/$(MODE)/third_party/stb/stb_image_resize2.o
 
 # ==============================================================================

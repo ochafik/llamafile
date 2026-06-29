@@ -34,6 +34,7 @@
 #include "zim/zim.h"
 
 #include "browser_tool.h"
+#include "wikidata.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -74,6 +75,7 @@ struct Tool {
 
 std::vector<Tool> g_tools;
 zim_archive *     g_zim = nullptr;
+wikidata_store *  g_wd = nullptr;
 
 const Tool * find_tool(const std::string & name) {
     for (const auto & t : g_tools) {
@@ -264,6 +266,157 @@ void register_wiki_tools() {
 }
 
 // -----------------------------------------------------------------
+// Wikidata tools (structured facts; SQLite+FTS5 store, see wikidata.cpp)
+// -----------------------------------------------------------------
+
+json wd_value_json(const wikidata_value & v) {
+    json o;
+    o["type"] = v.type;
+    o["text"] = v.text;
+    if (!v.id.empty()) o["id"] = v.id;
+    return o;
+}
+
+json wd_statement_json(const wikidata_statement & st) {
+    json o;
+    o["property"] = json{ { "id", st.pid }, { "label", st.prop_label } };
+    o["value"] = wd_value_json(st.value);
+    if (!st.qualifiers.empty()) {
+        json q = json::array();
+        for (const auto & ql : st.qualifiers) {
+            q.push_back(json{
+                { "property", json{ { "id", ql.pid }, { "label", ql.prop_label } } },
+                { "value", wd_value_json(ql.value) },
+            });
+        }
+        o["qualifiers"] = q;
+    }
+    return o;
+}
+
+json tool_wikidata_search(const json & args) {
+    if (!args.contains("query") || !args["query"].is_string()) {
+        return text_result("error: missing required string argument 'query'", true);
+    }
+    std::string query = args["query"].get<std::string>();
+    int limit = 10;
+    if (args.contains("limit") && args["limit"].is_number_integer()) {
+        limit = args["limit"].get<int>();
+    }
+    if (limit < 1)  limit = 1;
+    if (limit > 50) limit = 50;
+
+    std::vector<wikidata_hit> hits = wikidata_search(g_wd, query, limit);
+    if (hits.empty()) {
+        return text_result("No results for \"" + query + "\".");
+    }
+    json out = json::array();
+    for (const auto & h : hits) {
+        out.push_back(json{
+            { "id", h.id },
+            { "label", h.label },
+            { "description", h.description },
+        });
+    }
+    return text_result(out.dump(2));
+}
+
+json tool_wikidata_entity(const json & args) {
+    if (!args.contains("id") || !args["id"].is_string()) {
+        return text_result("error: missing required string argument 'id'", true);
+    }
+    std::string id = args["id"].get<std::string>();
+    wikidata_entity e = wikidata_get(g_wd, id);
+    if (!e.found) {
+        return text_result("Entity not found: " + id, true);
+    }
+    json claims = json::array();
+    for (const auto & st : e.claims) claims.push_back(wd_statement_json(st));
+    json out = {
+        { "id", e.id },
+        { "label", e.label },
+        { "description", e.description },
+        { "aliases", e.aliases },
+        { "claims", claims },
+    };
+    return text_result(out.dump(2));
+}
+
+json tool_wikidata_property(const json & args) {
+    if (!args.contains("id") || !args["id"].is_string() ||
+        !args.contains("property") || !args["property"].is_string()) {
+        return text_result("error: requires string arguments 'id' and 'property'", true);
+    }
+    std::string id = args["id"].get<std::string>();
+    std::string pid = args["property"].get<std::string>();
+    std::vector<wikidata_statement> vals = wikidata_property(g_wd, id, pid);
+    if (vals.empty()) {
+        return text_result("No values for " + id + " / " + pid + ".");
+    }
+    json out = json::array();
+    for (const auto & st : vals) out.push_back(wd_statement_json(st));
+    return text_result(out.dump(2));
+}
+
+void register_wikidata_tools() {
+    g_tools.push_back(Tool{
+        "wikidata_search",
+        "Search the offline Wikidata fact store for entities by label/alias. "
+        "Returns a JSON list of {id, label, description} candidates for "
+        "disambiguation; pass the chosen id to wikidata_entity. Plain words are "
+        "matched as an implicit AND; you may also issue an FTS5 boolean "
+        "expression (e.g. \"Eiffel OR \\\"Tour Eiffel\\\"\") to broaden recall.",
+        json{
+            { "type", "object" },
+            { "properties", json{
+                { "query", json{ { "type", "string" },
+                                 { "description", "Entity name / keywords (or an FTS5 expression)." } } },
+                { "limit", json{ { "type", "integer" },
+                                 { "description", "Maximum number of results (default 10, max 50)." } } },
+            } },
+            { "required", json::array({ "query" }) },
+        },
+        tool_wikidata_search,
+    });
+
+    g_tools.push_back(Tool{
+        "wikidata_entity",
+        "Fetch a Wikidata entity by id (e.g. \"Q243\"). Returns "
+        "{id, label, description, aliases, claims}, where each claim has its "
+        "property and value resolved to human labels (e.g. height = \"330 metre\") "
+        "with qualifiers (time ranges, applies-to-part, ...). Use wikidata_search "
+        "first to find the id.",
+        json{
+            { "type", "object" },
+            { "properties", json{
+                { "id", json{ { "type", "string" },
+                              { "description", "Wikidata entity id, e.g. \"Q243\"." } } },
+            } },
+            { "required", json::array({ "id" }) },
+        },
+        tool_wikidata_entity,
+    });
+
+    g_tools.push_back(Tool{
+        "wikidata_property",
+        "Fetch just one property's values for a Wikidata entity (convenience over "
+        "wikidata_entity). Example: id=\"Q243\", property=\"P2048\" -> the height "
+        "values. Returns a JSON list of resolved statements with qualifiers.",
+        json{
+            { "type", "object" },
+            { "properties", json{
+                { "id", json{ { "type", "string" },
+                              { "description", "Wikidata entity id, e.g. \"Q243\"." } } },
+                { "property", json{ { "type", "string" },
+                                    { "description", "Wikidata property id, e.g. \"P2048\"." } } },
+            } },
+            { "required", json::array({ "id", "property" }) },
+        },
+        tool_wikidata_property,
+    });
+}
+
+// -----------------------------------------------------------------
 // JSON-RPC wire helpers (stdout is the protocol channel — keep it clean)
 // -----------------------------------------------------------------
 
@@ -370,11 +523,15 @@ void mcp_server_usage(FILE * f) {
         "JSON-RPC 2.0 on stdin/stdout.\n"
         "\n"
         "usage:\n"
-        "  llamafile mcp-server [--zim PATH] [--browser[-attach [PORT]]]\n"
+        "  llamafile mcp-server [--zim PATH] [--wikidata PATH] [--browser[-attach [PORT]]]\n"
         "\n"
         "options:\n"
         "  --zim PATH         path to a .zim archive (default: $LLAMAFILE_ZIM or a\n"
-        "                     bundled /zip/wikipedia.zim if present)\n"
+        "                     bundled /zip/wikipedia.zim if present); enables\n"
+        "                     wiki_search / wiki_get_article.\n"
+        "  --wikidata PATH    path to a Wikidata .sqlite store (default:\n"
+        "                     $LLAMAFILE_WIKIDATA); enables wikidata_search /\n"
+        "                     wikidata_entity / wikidata_property.\n"
         "  --browser          expose the browser_* tools (in-process CDP; LAUNCH a\n"
         "                     headless Chrome on demand). OFF by default.\n"
         "  --browser-attach [PORT]\n"
@@ -385,7 +542,7 @@ void mcp_server_usage(FILE * f) {
         "  --browser-path P   path to the Chrome/Chromium executable (override).\n"
         "  --browser-allow L  comma-separated domain allowlist (e.g. en.wikipedia.org).\n"
         "\n"
-        "Either a ZIM archive or --browser (or both) must be provided.\n"
+        "At least one source (--zim, --wikidata or --browser) must be provided.\n"
         "\n"
         "register with Claude Code:\n"
         "  claude mcp add wikipedia -- /path/to/llamafile mcp-server --zim PATH\n"
@@ -398,6 +555,7 @@ void mcp_server_usage(FILE * f) {
 int mcp_server_main(int argc, char ** argv) {
     // argv: [0]=llamafile [1]=mcp-server [...]=args
     const char * zim_path = nullptr;
+    const char * wikidata_path = nullptr;
     bool zim_explicit = false;
     browser::Options bopts;
 
@@ -405,6 +563,8 @@ int mcp_server_main(int argc, char ** argv) {
         if (!strcmp(argv[i], "--zim") && i + 1 < argc) {
             zim_path = argv[++i];
             zim_explicit = true;
+        } else if (!strcmp(argv[i], "--wikidata") && i + 1 < argc) {
+            wikidata_path = argv[++i];
         } else if (!strcmp(argv[i], "--browser")) {
             bopts.enabled = true;
         } else if (!strcmp(argv[i], "--browser-attach")) {
@@ -440,31 +600,30 @@ int mcp_server_main(int argc, char ** argv) {
     }
 
     if (!zim_path) zim_path = getenv("LLAMAFILE_ZIM");
-    bool used_default = false;
-    if (!zim_path) { zim_path = WIKI_DEFAULT_ZIM; used_default = true; }
+    bool zim_used_default = false;
+    if (!zim_path) { zim_path = WIKI_DEFAULT_ZIM; zim_used_default = true; }
 
-    // Wikipedia tools require a ZIM. If --browser is on we can serve without one,
-    // so a missing/unopenable ZIM is only fatal when browser tools are also off.
+    // Each source (Wikipedia ZIM, Wikidata store, browser) is optional and
+    // additive: register whatever opens. A hard error only if NOTHING enabled
+    // (checked once below). Diagnostics go to stderr — stdout is the protocol.
     g_zim = zim_open(zim_path);
     if (g_zim) {
         register_wiki_tools();
-    } else if (bopts.enabled && !zim_explicit && used_default) {
-        // No ZIM given, but browser tools requested — that's fine.
-    } else if (bopts.enabled) {
-        fprintf(stderr, "mcp-server: ZIM '%s' unavailable (%s); serving browser tools only.\n",
+    } else if (zim_explicit || !zim_used_default) {
+        fprintf(stderr, "mcp-server: failed to open ZIM '%s': %s\n",
                 zim_path, zim_error());
-    } else {
-        // Diagnostics to stderr only — stdout must stay a clean protocol channel.
-        if (used_default) {
-            fprintf(stderr, "mcp-server: no tools enabled. Pass --zim PATH "
-                            "(or set $LLAMAFILE_ZIM, or bundle one at %s) "
-                            "and/or pass --browser.\n",
-                    WIKI_DEFAULT_ZIM);
+    }
+
+    // Wikidata structured-fact store (SQLite+FTS5).
+    if (!wikidata_path) wikidata_path = getenv("LLAMAFILE_WIKIDATA");
+    if (wikidata_path) {
+        g_wd = wikidata_open(wikidata_path);
+        if (g_wd) {
+            register_wikidata_tools();
         } else {
-            fprintf(stderr, "mcp-server: failed to open ZIM '%s': %s\n",
-                    zim_path, zim_error());
+            fprintf(stderr, "mcp-server: failed to open Wikidata store '%s': %s\n",
+                    wikidata_path, wikidata_error());
         }
-        return 1;
     }
 
     browser::register_browser_tools(bopts, [](const std::string & name,
@@ -475,7 +634,8 @@ int mcp_server_main(int argc, char ** argv) {
     });
 
     if (g_tools.empty()) {
-        fprintf(stderr, "mcp-server: no tools enabled (no ZIM and no --browser).\n");
+        fprintf(stderr, "mcp-server: no tools enabled. Pass --zim PATH, "
+                        "--wikidata PATH and/or --browser.\n");
         return 1;
     }
 
@@ -516,5 +676,6 @@ int mcp_server_main(int argc, char ** argv) {
 
     zim_close(g_zim);
     g_zim = nullptr;
+    if (g_wd) { wikidata_close(g_wd); g_wd = nullptr; }
     return 0;
 }
