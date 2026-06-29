@@ -297,6 +297,13 @@ LLAMAFILE_WEBCAM_UI_ASSETS := \
 	o/$(MODE)/llamafile/webcam_ui/webcam-agent.html.zip.o \
 	o/$(MODE)/llamafile/webcam_ui/frame-selection.js.zip.o
 
+# Interactive multi-agent runtime web UI (Phase 5), embedded in the APE via
+# zipobj and served from the /zip/ VFS at runtime (see agent_runtime_server.cpp
+# handle_agents_ui()). Runtime path: /zip/llamafile/agent_ui/agents.html, served
+# at GET /agents.
+LLAMAFILE_AGENT_UI_ASSETS := \
+	o/$(MODE)/llamafile/agent_ui/agents.html.zip.o
+
 # Use deferred expansion (=) since this depends on variables from llama.cpp/BUILD.mk
 LLAMAFILE_DEPS = \
 	$(GGML_OBJS) \
@@ -308,6 +315,7 @@ LLAMAFILE_DEPS = \
 	$(LLAMAFILE_HIGHLIGHT_KEYWORDS) \
 	$(LLAMAFILE_METAL_SOURCES) \
 	$(LLAMAFILE_WEBCAM_UI_ASSETS) \
+	$(LLAMAFILE_AGENT_UI_ASSETS) \
 	$(TINYBLAS_CPU_OBJS) \
 	$(LLAMAFILE_ZIM_OBJS) \
 	o/$(MODE)/third_party/sqlite/sqlite3.o \

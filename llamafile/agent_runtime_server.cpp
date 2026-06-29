@@ -831,6 +831,41 @@ server_http_res_ptr events_stream(agentrt::EventBroker * b) {
     return r;
 }
 
+// --- static UI assets (embedded in the APE zip, served from the /zip/ VFS) --
+// The interactive-runtime web UI (agent lanes/timeline + session manager). It
+// is a self-contained, dependency-free page that drives the endpoints below.
+// Mirrors webcam_agent.cpp's serve_asset(): read the embedded /zip/ file.
+bool read_zip_asset(const char * zip_path, std::string & out) {
+    FILE * f = fopen(zip_path, "rb");
+    if (!f) return false;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
+    long n = ftell(f);
+    if (n < 0) { fclose(f); return false; }
+    fseek(f, 0, SEEK_SET);
+    out.resize((size_t) n);
+    size_t rd = n ? fread(&out[0], 1, (size_t) n, f) : 0;
+    fclose(f);
+    out.resize(rd);
+    return true;
+}
+
+server_http_res_ptr serve_asset(const char * zip_path, const char * content_type) {
+    std::string body;
+    if (!read_zip_asset(zip_path, body))
+        return json_res(404, json{{"error", "embedded asset not found"}, {"path", zip_path}});
+    auto r = std::make_unique<server_http_res>();
+    r->status = 200;
+    r->content_type = content_type;
+    r->data = std::move(body);
+    return r;
+}
+
+// GET /agents (+ /agents/ui alias) — the embedded multi-agent runtime web UI.
+server_http_res_ptr handle_agents_ui(const server_http_req &) {
+    return serve_asset("/zip/llamafile/agent_ui/agents.html",
+                       "text/html; charset=utf-8");
+}
+
 server_http_res_ptr serve_trace_file(const std::string & path) {
     FILE * f = fopen(path.c_str(), "rb");
     if (!f) return json_res(404, json{{"error", "no trace yet"}});
@@ -1048,6 +1083,10 @@ void llamafile_runtime_register_routes(server_http_context & http) {
     http.post("/session/:id/pause",    handle_session_pause);
     http.post("/session/:id/resume",   handle_session_resume);
     http.post("/session/:id/stop",     handle_session_stop);
+
+    // Phase 5: the embedded web UI (agent lanes/timeline + session manager).
+    http.get ("/agents",     handle_agents_ui);
+    http.get ("/agents/ui",  handle_agents_ui);
 
     // Legacy /runtime/* aliases (back-compat: drive the current session).
     http.post("/runtime/start",  handle_start);

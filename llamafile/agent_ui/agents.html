@@ -1,0 +1,384 @@
+<!doctype html>
+<!--
+  llamafile interactive multi-agent runtime — web UI (Phase 5)
+
+  A self-contained, dependency-free page (no external CDNs; works offline inside
+  the APE). It drives the runtime's existing endpoints:
+    GET  /sessions                     list + status + n_agents + total_tokens
+    POST /session {goal}               create a session (orchestrator seeded)
+    GET  /session/:id                  full state (agents + final_answer)
+    GET  /session/:id/events  (SSE)    live trace stream (replayed from 0)
+    GET  /session/:id/trace            persisted trace.jsonl (backfill)
+    POST /session/:id/{pause,resume,stop}
+
+  Two panels:
+    * Session manager (left): list/new/pause/resume/stop, auto-refresh.
+    * Live agent lanes (right): one lane per agent, nested by parent_id, with
+      each agent's turns / tool_calls / tool_results / messages / spawns / awaits
+      streamed inline with timestamps; per-agent + session token totals and a
+      final-answer panel.
+  See ddocs/09-interactive-multiagent-runtime.md §6, §9.5.
+-->
+<html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>llamafile — agent runtime</title>
+<style>
+ :root{color-scheme:dark;font-family:ui-sans-serif,system-ui,sans-serif}
+ *{box-sizing:border-box}
+ body{margin:0;background:#0b0d10;color:#e6e8eb;display:grid;
+      grid-template-columns:340px 1fr;gap:0;height:100vh;overflow:hidden}
+ h1{font:600 14px ui-sans-serif;margin:0;padding:12px 14px;border-bottom:1px solid #1c232b;
+    display:flex;align-items:center;gap:8px}
+ h1 .dot{width:8px;height:8px;border-radius:50%;background:#7fd1b9}
+ /* ---- session manager (left) ---- */
+ #side{border-right:1px solid #1c232b;display:flex;flex-direction:column;min-height:0}
+ #side .hd{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;
+           border-bottom:1px solid #1c232b}
+ #side .hd b{font:600 12px ui-sans-serif;color:#9aa4af;text-transform:uppercase;letter-spacing:.05em}
+ button{background:#1b2530;color:#dbe6f0;border:1px solid #2b3a47;border-radius:6px;
+        padding:5px 9px;font:12px ui-sans-serif;cursor:pointer}
+ button:hover{background:#243240}
+ button.primary{background:#1f6f54;border-color:#2c9472;color:#eafff6}
+ button.primary:hover{background:#26865f}
+ button:disabled{opacity:.4;cursor:default}
+ #sessions{overflow:auto;flex:1;padding:6px}
+ .scard{border:1px solid #1c232b;border-radius:8px;padding:8px 10px;margin-bottom:6px;cursor:pointer;
+        background:#0e1217}
+ .scard:hover{border-color:#314253}
+ .scard.sel{border-color:#3a7d99;background:#101a22}
+ .scard .gl{font:13px ui-sans-serif;color:#e6e8eb;margin-bottom:4px;
+            overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .scard .row{display:flex;align-items:center;gap:6px;font:11px ui-monospace,monospace;color:#7e8a96}
+ .scard .acts{display:flex;gap:4px;margin-top:7px}
+ .scard .acts button{padding:3px 7px;font-size:11px}
+ .badge{font:600 10px ui-sans-serif;text-transform:uppercase;letter-spacing:.04em;
+        padding:2px 6px;border-radius:10px}
+ .badge.running{background:#143b2b;color:#7fd1b9}
+ .badge.paused{background:#3a3417;color:#e0c057}
+ .badge.done{background:#1f2a36;color:#8fb0d6}
+ .badge.error{background:#3a1c1c;color:#e06b6b}
+ .empty{color:#5b6672;font:12px ui-sans-serif;padding:14px;text-align:center}
+ /* ---- live lanes (right) ---- */
+ #main{display:flex;flex-direction:column;min-height:0}
+ #mhd{padding:10px 14px;border-bottom:1px solid #1c232b;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+ #mhd .goal{font:600 14px ui-sans-serif}
+ #mhd .meta{font:12px ui-monospace,monospace;color:#7e8a96;display:flex;gap:14px;flex-wrap:wrap}
+ #final{margin:0;padding:0}
+ #final .box{margin:10px 14px;padding:10px 12px;border:1px solid #2c9472;border-radius:8px;
+             background:#0f1a16;white-space:pre-wrap;font:13px/1.5 ui-sans-serif}
+ #final .box b{color:#7fd1b9;display:block;margin-bottom:5px;font:600 11px ui-sans-serif;
+               text-transform:uppercase;letter-spacing:.05em}
+ #lanes{overflow:auto;flex:1;padding:10px 14px}
+ .lane{border-left:2px solid #243240;margin:0 0 8px 0;padding:0 0 0 10px}
+ .lane .ah{display:flex;align-items:center;gap:8px;position:sticky;top:0;background:#0b0d10;
+           padding:5px 0;z-index:1}
+ .lane .nm{font:600 13px ui-sans-serif}
+ .lane .rl{font:11px ui-monospace,monospace;color:#7e8a96}
+ .lane .tk{font:11px ui-monospace,monospace;color:#5b6672;margin-left:auto}
+ .stat{font:600 10px ui-sans-serif;text-transform:uppercase;padding:1px 6px;border-radius:8px;
+       background:#1f2a36;color:#8fb0d6}
+ .stat.running{background:#143b2b;color:#7fd1b9}.stat.done{background:#1f2a36;color:#8fb0d6}
+ .stat.waiting,.stat.parked{background:#3a3417;color:#e0c057}
+ .evs{font:12px/1.5 ui-monospace,monospace}
+ .ev{display:flex;gap:7px;padding:1px 0;align-items:baseline}
+ .ev .ts{color:#4a545e;flex:none}
+ .ev .ic{flex:none;width:1.4em;text-align:center}
+ .ev .tx{min-width:0;overflow-wrap:anywhere}
+ .ev.turn .tx{color:#9aa4af}.ev.tool_call .tx{color:#7fd1b9}.ev.tool_result .tx{color:#6f9c8d}
+ .ev.message .tx{color:#c79bf0}.ev.spawn .tx{color:#e0b057}.ev.await .tx{color:#7fb0e0}
+ .ev.final .tx{color:#7fd1b9}.ev.guard .tx{color:#e06b6b}.ev.wait .tx,.ev.poll .tx{color:#9ab6e0}
+ .ev .k{color:#5b6672}
+ #conn{font:11px ui-monospace,monospace;color:#5b6672;margin-left:auto}
+</style></head><body>
+
+<div id="side">
+  <h1><span class="dot"></span> llamafile agents</h1>
+  <div class="hd"><b>Sessions</b>
+    <span style="display:flex;gap:6px">
+      <button id="newBtn" class="primary">+ New</button>
+      <button id="refBtn" title="refresh now">↻</button>
+    </span>
+  </div>
+  <div id="sessions"><div class="empty">loading…</div></div>
+</div>
+
+<div id="main">
+  <div id="mhd">
+    <span class="goal" id="goal">No session selected</span>
+    <span class="meta" id="meta"></span>
+    <span id="conn"></span>
+  </div>
+  <div id="final"></div>
+  <div id="lanes"><div class="empty">Pick a session on the left, or create one with “+ New”.</div></div>
+</div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s==null?"":s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const hms = ts => { const d = ts ? new Date(ts*1000) : new Date(); return d.toLocaleTimeString(); };
+const shortId = s => String(s||"").length>10 ? String(s).slice(0,10) : String(s||"");
+
+// ---- API helpers -----------------------------------------------------------
+async function api(method, path, body){
+  const opt = {method, headers:{}};
+  if(body!==undefined){ opt.headers["Content-Type"]="application/json"; opt.body=JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  let j=null; try{ j=await r.json(); }catch(e){}
+  if(!r.ok) throw new Error((j&&j.error)||("HTTP "+r.status));
+  return j;
+}
+
+// ---- session manager (left panel) ------------------------------------------
+let SESSIONS = [];
+let SELECTED = null;
+
+function badge(st){ const c = st==="running"?"running":st==="paused"?"paused":st==="error"?"error":"done";
+  return `<span class="badge ${c}">${esc(st)}</span>`; }
+
+function renderSessions(){
+  const host = $("#sessions");
+  if(!SESSIONS.length){ host.innerHTML = `<div class="empty">No sessions yet.<br>Create one with “+ New”.</div>`; return; }
+  host.innerHTML = "";
+  for(const s of SESSIONS){
+    const st = s.status||"running";
+    const div = document.createElement("div");
+    div.className = "scard" + (s.id===SELECTED?" sel":"");
+    div.innerHTML =
+      `<div class="gl" title="${esc(s.goal)}">${esc(s.goal||"(no goal)")}</div>`+
+      `<div class="row">${badge(st)} <span>${esc(shortId(s.id))}</span>`+
+      `<span>· ${s.n_agents||0} agents</span><span>· ${(s.total_tokens||0)} tok</span></div>`+
+      `<div class="acts">`+
+        `<button data-a="pause"  ${st!=="running"?"disabled":""}>Pause</button>`+
+        `<button data-a="resume" ${st==="running"||st==="done"?"disabled":""}>Resume</button>`+
+        `<button data-a="stop"   ${st==="done"?"disabled":""}>Stop</button>`+
+      `</div>`;
+    div.querySelector(".gl").onclick = ()=>select(s.id);
+    div.querySelector(".row").onclick = ()=>select(s.id);
+    div.querySelectorAll(".acts button").forEach(b=>{
+      b.onclick = async (e)=>{ e.stopPropagation();
+        try{ await api("POST", `/session/${encodeURIComponent(s.id)}/${b.dataset.a}`); }
+        catch(err){ alert(b.dataset.a+" failed: "+err.message); }
+        refreshSessions();
+        if(s.id===SELECTED && b.dataset.a==="resume") select(s.id); // re-tail
+      };
+    });
+    host.appendChild(div);
+  }
+}
+
+async function refreshSessions(){
+  try{
+    const j = await api("GET", "/sessions");
+    SESSIONS = (j.sessions||[]).slice().sort((a,b)=>(b.last_activity||0)-(a.last_activity||0));
+    renderSessions();
+    if(SELECTED){ const s = SESSIONS.find(x=>x.id===SELECTED); if(s) updateHeaderMeta(s); }
+  }catch(e){ $("#sessions").innerHTML = `<div class="empty">/sessions error: ${esc(e.message)}</div>`; }
+}
+
+$("#newBtn").onclick = async ()=>{
+  const goal = prompt("New session goal / objective:",
+    "compare Eiffel Tower and Statue of Liberty heights");
+  if(!goal) return;
+  try{
+    const j = await api("POST", "/session", {goal});
+    await refreshSessions();
+    if(j && j.session) select(j.session);
+  }catch(e){ alert("create failed: "+e.message); }
+};
+$("#refBtn").onclick = refreshSessions;
+
+// ---- live agent lanes (right panel) ----------------------------------------
+let ES = null;                 // EventSource for the selected session
+let AGENTS = new Map();        // id -> {id,name,role,parent_id,depth,status,tp,tc,el,evs}
+let SEEN = new Set();          // dedup: raw event JSON strings (trace ⋂ SSE replay)
+let SESSION_TOTAL = 0;
+
+function ensureAgent(id){
+  if(!id) id = "(system)";
+  let a = AGENTS.get(id);
+  if(!a){ a = {id, name:id, role:"", parent_id:"", depth:0, status:"", tp:0, tc:0, el:null, evs:null};
+          AGENTS.set(id, a); layoutLanes(); }
+  return a;
+}
+
+function laneEl(a){
+  const lane = document.createElement("div");
+  lane.className = "lane"; lane.style.marginLeft = (a.depth*16)+"px";
+  lane.innerHTML =
+    `<div class="ah"><span class="nm"></span><span class="rl"></span>`+
+    `<span class="stat"></span><span class="tk"></span></div><div class="evs"></div>`;
+  a.el = lane; a.evs = lane.querySelector(".evs");
+  refreshLaneHead(a);
+  return lane;
+}
+function refreshLaneHead(a){
+  if(!a.el) return;
+  a.el.querySelector(".nm").textContent = a.name||a.id;
+  a.el.querySelector(".rl").textContent = a.role ? "· "+a.role : ("· "+shortId(a.id));
+  const st = a.el.querySelector(".stat"); st.textContent = a.status||"idle";
+  st.className = "stat "+(a.status||"");
+  a.el.querySelector(".tk").textContent = (a.tp+a.tc) ? `${a.tp+a.tc} tok (${a.tp}p/${a.tc}c)` : "";
+}
+
+// (re)order lanes as a parent_id tree, DFS, indented by depth.
+function layoutLanes(){
+  const host = $("#lanes");
+  const kids = new Map();
+  for(const a of AGENTS.values()){
+    const p = AGENTS.has(a.parent_id) ? a.parent_id : "";
+    if(!kids.has(p)) kids.set(p, []); kids.get(p).push(a);
+  }
+  const order = [];
+  const walk = (pid,d)=>{ for(const a of (kids.get(pid)||[])){ a.depth=d; order.push(a); walk(a.id,d+1); } };
+  walk("",0);
+  // any orphans (parent not yet known) at the end
+  for(const a of AGENTS.values()) if(!order.includes(a)) order.push(a);
+  host.innerHTML="";
+  for(const a of order){ if(!a.el) laneEl(a); a.el.style.marginLeft=(a.depth*16)+"px";
+                         refreshLaneHead(a); host.appendChild(a.el); }
+}
+
+function addEv(agentId, cls, icon, html, ts){
+  const a = ensureAgent(agentId);
+  if(!a.el) layoutLanes();
+  const row = document.createElement("div");
+  row.className = "ev "+cls;
+  row.innerHTML = `<span class="ts">${esc(hms(ts))}</span><span class="ic">${icon}</span><span class="tx">${html}</span>`;
+  a.evs.appendChild(row);
+  const lanes = $("#lanes"); lanes.scrollTop = lanes.scrollHeight;
+}
+
+function setFinal(text){
+  $("#final").innerHTML = `<div class="box"><b>Final answer</b>${esc(text)}</div>`;
+}
+
+function updateHeaderMeta(s){
+  $("#goal").textContent = s.goal || "(session "+shortId(s.id)+")";
+  SESSION_TOTAL = s.total_tokens||SESSION_TOTAL;
+  $("#meta").innerHTML =
+    `${badge(s.status||"running")} <span>${esc(shortId(s.id))}</span>`+
+    `<span>${s.n_agents||AGENTS.size} agents</span>`+
+    `<span>${SESSION_TOTAL} tokens</span>`;
+}
+
+// Render ONE trace event into the lanes. Returns nothing.
+function renderEvent(e){
+  if(!e || typeof e!=="object") return;
+  const t = e.type, ts = e.ts;
+  switch(t){
+    case "spawn": {
+      const a = ensureAgent(e.agent_id);
+      a.name = e.name||a.name; a.role = e.role||a.role;
+      a.parent_id = e.parent_id||""; if(typeof e.depth==="number") a.depth=e.depth;
+      a.status = "running"; layoutLanes();
+      if(e.parent_id) addEv(e.parent_id,"spawn","⑂",
+        `spawned <b>${esc(e.name||e.agent_id)}</b> <span class="k">(${esc(e.role||"")})</span>`, ts);
+      addEv(e.agent_id,"spawn","●", `agent started <span class="k">${esc(e.role||"")}</span>`, ts);
+      break; }
+    case "turn": {
+      const a = ensureAgent(e.agent_id);
+      if(typeof e.agent_tokens_prompt==="number") a.tp = e.agent_tokens_prompt;
+      if(typeof e.agent_tokens_completion==="number") a.tc = e.agent_tokens_completion;
+      a.status = "running"; refreshLaneHead(a);
+      if(e.session && typeof e.session.total_tokens==="number"){ SESSION_TOTAL=e.session.total_tokens;
+        const s=SESSIONS.find(x=>x.id===SELECTED); if(s) updateHeaderMeta(s); }
+      if(e.error){ addEv(e.agent_id,"guard","✖", `turn error: ${esc(e.error)}`, ts); break; }
+      const dur = e.dur_ms?` <span class="k">${Math.round(e.dur_ms)}ms</span>`:"";
+      const tk = (e.tokens_prompt||e.tokens_completion)?
+        ` <span class="k">${e.tokens_prompt||0}p/${e.tokens_completion||0}c</span>`:"";
+      const nc = e.n_tool_calls? ` → ${e.n_tool_calls} tool call(s)`:" → reply";
+      addEv(e.agent_id,"turn","▸", `turn${nc}${dur}${tk}`, ts);
+      break; }
+    case "tool_call":
+      addEv(e.agent_id,"tool_call","🛠",
+        `<b>${esc(e.tool)}</b> <span class="k">${esc(JSON.stringify(e.args||{})).slice(0,160)}</span>`, ts);
+      break;
+    case "tool_result":
+      addEv(e.agent_id,"tool_result","↳",
+        `<b>${esc(e.tool)}</b> → ${esc(String(e.result||"")).slice(0,200)}`, ts);
+      break;
+    case "message":
+      addEv(e.from||"(system)","message","✉",
+        `→ ${esc(shortId(e.to))} <span class="k">${esc(String(e.content||"")).slice(0,160)}</span>`, ts);
+      break;
+    case "await":
+      addEv(e.agent_id,"await","⏸",
+        `await ${esc((e.ids||e.wait_ids||[]).map(shortId).join(", "))||"children"}`, ts);
+      break;
+    case "await_resume":
+      addEv(e.agent_id,"await","▶",
+        `resumed <span class="k">${e.reported||0} reported${e.timed_out?", timed out":""}</span>`, ts);
+      { const a=AGENTS.get(e.agent_id); if(a){a.status="running";refreshLaneHead(a);} }
+      break;
+    case "wait":
+      addEv(e.agent_id,"wait","⏲", `wait ${esc(e.event||"")} ${e.seconds!=null?e.seconds+"s":""}`, ts);
+      break;
+    case "poll":
+      addEv(e.agent_id,"poll","🔁",
+        `poll ${esc(e.event||"")} <b>${esc(e.tool||"")}</b>${e.iteration?` #${e.iteration}`:""}`, ts);
+      break;
+    case "schedule":
+      addEv(e.agent_id,"wait","⏰", `scheduled → ${esc(shortId(e.to))}`, ts);
+      break;
+    case "guard":
+      addEv(e.agent_id,"guard","⚠", `guard: ${esc(e.reason||"")}`, ts);
+      break;
+    case "final": {
+      const a = AGENTS.get(e.agent_id); if(a){ a.status="done"; refreshLaneHead(a); }
+      addEv(e.agent_id,"final","★", `final answer produced`, ts);
+      if(e.answer) setFinal(e.answer);
+      break; }
+    case "agent_done": {
+      const a = AGENTS.get(e.agent_id); if(a){ a.status="done"; refreshLaneHead(a); }
+      addEv(e.agent_id,"turn","✔", `done`, ts);
+      break; }
+    default:
+      if(e.agent_id) addEv(e.agent_id,"turn","·", esc(t||"event"), ts);
+  }
+}
+
+function ingest(line){
+  if(SEEN.has(line)) return;            // dedup trace-backfill vs SSE replay-from-0
+  SEEN.add(line);
+  let e; try{ e=JSON.parse(line); }catch(_){ return; }
+  renderEvent(e);
+}
+
+async function select(id){
+  if(ES){ ES.close(); ES=null; }
+  SELECTED = id; AGENTS = new Map(); SEEN = new Set(); SESSION_TOTAL = 0;
+  $("#final").innerHTML = ""; $("#lanes").innerHTML = "";
+  renderSessions();
+  // 1. header + agent skeleton + any prior final answer
+  try{
+    const st = await api("GET", `/session/${encodeURIComponent(id)}`);
+    updateHeaderMeta(st);
+    for(const a of (st.agents||[])){
+      const x = ensureAgent(a.id);
+      x.name=a.name||x.name; x.role=a.role||x.role; x.parent_id=a.parent_id||"";
+      if(typeof a.depth==="number") x.depth=a.depth; x.status=a.status||"";
+      x.tp=a.tokens_prompt||0; x.tc=a.tokens_completion||0;
+    }
+    layoutLanes();
+    if(st.final_answer) setFinal(st.final_answer);
+  }catch(e){ $("#goal").textContent = "session "+shortId(id)+" — "+e.message; }
+  // 2. backfill from persisted trace (works for paused/done too)
+  try{
+    const r = await fetch(`/session/${encodeURIComponent(id)}/trace`);
+    if(r.ok){ const txt = await r.text();
+      for(const ln of txt.split("\n")){ const s=ln.trim(); if(s) ingest(s); } }
+  }catch(_){}
+  // 3. live-tail SSE (replays from 0; dedup collapses the overlap with trace)
+  $("#conn").textContent = "● live";
+  ES = new EventSource(`/session/${encodeURIComponent(id)}/events`);
+  ES.onmessage = m => { if(SELECTED===id) ingest(m.data); };
+  ES.addEventListener("close", ()=>{ $("#conn").textContent="○ closed"; });
+  ES.onerror = ()=>{ $("#conn").textContent="○ reconnecting…"; };
+}
+
+// ---- boot ------------------------------------------------------------------
+refreshSessions();
+setInterval(refreshSessions, 3000);
+</script>
+</body></html>
