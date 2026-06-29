@@ -1,0 +1,21 @@
+{"input":"<tool_call>{\"name\": \"do_nothing\", \"arguments\": {}}</tool_call>","expect_name":"do_nothing","expect_args":{},"format":"qwen2.5-json"}
+{"input":"<tool_call>{\"name\":\"do_nothing\",\"arguments\":{}}</tool_call>","expect_name":"do_nothing","expect_args":{},"format":"qwen2.5-json-compact"}
+{"input":"<tool_call>{\"name\": \"speak\", \"arguments\": {\"text\": \"hello world\"}}</tool_call>","expect_name":"speak","expect_args":{"text":"hello world"},"format":"qwen2.5-json"}
+{"input":"<tool_call>{\"name\": \"speak\", \"arguments\": {\"text\": \"line1\\nline2\\twith\\ttabs\"}}</tool_call>","expect_name":"speak","expect_args":{"text":"line1\nline2\twith\ttabs"},"format":"qwen2.5-json-escapes"}
+{"input":"<tool_call>{\"name\": \"note\", \"arguments\": {\"observation\": \"the user opened terminal\"}}</tool_call>","expect_name":"note","expect_args":{"observation":"the user opened terminal"},"format":"qwen2.5-json"}
+{"input":"some preamble text\n<tool_call>{\"name\": \"speak\", \"arguments\": {\"text\": \"yo\"}}</tool_call>\nepilogue","expect_name":"speak","expect_args":{"text":"yo"},"format":"qwen2.5-json-with-noise"}
+{"input":"<tool_call>{\"name\": \"speak\", \"arguments\": {\"text\": \"unterminated...\"","expect_parse_failure":true,"format":"qwen2.5-json-no-close-tag","note":"Streaming/partial-JSON tolerance not yet implemented; XML variant on line 14 does work. TODO: align with mlx-vlm parse_tool_call streaming behavior."}
+{"input":"<tool_call>\n  {\n    \"name\": \"speak\",\n    \"arguments\": {\"text\": \"with newlines\"}\n  }\n</tool_call>","expect_name":"speak","expect_args":{"text":"with newlines"},"format":"qwen2.5-json-pretty"}
+{"input":"<tool_call><function=do_nothing></function></tool_call>","expect_name":"do_nothing","expect_args":{},"format":"qwen3.5-xml-empty"}
+{"input":"<tool_call><function=speak><parameter=text>hello</parameter></function></tool_call>","expect_name":"speak","expect_args":{"text":"hello"},"format":"qwen3.5-xml"}
+{"input":"<tool_call><function=note><parameter=observation>multi line\nobservation here</parameter></function></tool_call>","expect_name":"note","expect_args":{"observation":"multi line\nobservation here"},"format":"qwen3.5-xml-multiline"}
+{"input":"<tool_call>\n<function=speak>\n<parameter=text>hi</parameter>\n</function>\n</tool_call>","expect_name":"speak","expect_args":{"text":"hi"},"format":"qwen3.5-xml-pretty"}
+{"input":"<tool_call><function=tool><parameter=a>1</parameter><parameter=b>two</parameter></function></tool_call>","expect_name":"tool","expect_args":{"a":"1","b":"two"},"format":"qwen3.5-xml-multi-param"}
+{"input":"<tool_call><function=speak><parameter=text>unclosed","expect_name":"speak","expect_args":{"text":"unclosed"},"format":"qwen3.5-xml-no-close-tags"}
+{"input":"completely unrelated text without any tool call here","expect_name":"","expect_args":{},"format":"no-tool-call","expect_parse_failure":true}
+{"input":"<tool_call>{not valid json at all}</tool_call>","expect_name":"","expect_args":{},"format":"malformed-json","expect_parse_failure":true}
+{"input":"<tool_call>{\"name\": \"speak\", \"arguments\": {\"text\": \"with embedded {brace} and \\\"quote\\\"\"}}</tool_call>","expect_name":"speak","expect_args":{"text":"with embedded {brace} and \"quote\""},"format":"qwen2.5-json-nested-chars"}
+{"input":"<tool_call>{\"name\": \"speak\", \"arguments\": {\"text\": \"a\", \"extra\": \"b\"}}</tool_call>","expect_name":"speak","expect_args":{"text":"a","extra":"b"},"format":"qwen2.5-json-multi-args"}
+{"input":"<tool_call>{\"name\": \"speak\", \"arguments\": null}</tool_call>","expect_name":"speak","expect_args":{},"format":"qwen2.5-json-null-args"}
+{"input":"<tool_call>{\"name\": \"speak\"}</tool_call>","expect_name":"speak","expect_args":{},"format":"qwen2.5-json-no-args"}
+{"input":"foo <tool_call>{\"name\":\"do_nothing\",\"arguments\":{}}</tool_call> bar <tool_call>{\"name\":\"speak\",\"arguments\":{\"text\":\"second\"}}</tool_call>","expect_name":"do_nothing","expect_args":{},"format":"qwen2.5-json-multi-call-first-wins"}

@@ -152,6 +152,10 @@ LLAMAFILE_SRCS_CPP := \
 	llamafile/llama.cpp \
 	llamafile/mcp_host.cpp \
 	llamafile/mcp_server.cpp \
+	llamafile/mtmd_video_cli.cpp \
+	llamafile/vlib_video/vlib_video_tool_parser.cpp \
+	llamafile/vlib_video/vlib_video_frame_filter.cpp \
+	llamafile/vlib_video/vlib_video_session.cpp \
 	llamafile/string.cpp \
 	llamafile/wiki_cli.cpp \
 	llamafile/xterm.cpp \

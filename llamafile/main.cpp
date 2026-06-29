@@ -107,6 +107,10 @@ extern int wiki_cli_main(int argc, char **argv);
 // `llamafile mcp-server ...` — MCP server over stdio; see mcp_server.cpp.
 extern int mcp_server_main(int argc, char **argv);
 
+// `llamafile mtmd-video-cli ...` — browser-free continuous-video VLM session
+// harness (folder of JPEGs -> per-frame tool calls); see mtmd_video_cli.cpp.
+extern int mtmd_video_cli_main(int argc, char **argv);
+
 static void print_general_help() {
     printf("llamafile v" LLAMAFILE_VERSION_STRING " - run LLMs locally\n"
            "\n"
@@ -300,6 +304,14 @@ int main(int argc, char **argv) {
     // tools. Dispatched early — needs only the ZIM reader, no model/server/GPU.
     if (argc > 1 && !strcmp(argv[1], "mcp-server")) {
         return mcp_server_main(argc, argv);
+    }
+
+    // `llamafile mtmd-video-cli ...` subcommand: run a continuous-video VLM
+    // session over a folder of JPEGs and print the per-frame actions/tool
+    // calls. Dispatched early — it does its own GPU/backend/model bring-up and
+    // must short-circuit the server/chatbot argument machinery.
+    if (argc > 1 && !strcmp(argv[1], "mtmd-video-cli")) {
+        return mtmd_video_cli_main(argc, argv);
     }
 
     // Diagnostic: when LLAMAFILE_TRACE_SIGNALS=1 is set, log every
