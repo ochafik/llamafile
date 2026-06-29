@@ -156,6 +156,7 @@ LLAMAFILE_SRCS_CPP := \
 	llamafile/vlib_video/vlib_video_tool_parser.cpp \
 	llamafile/vlib_video/vlib_video_frame_filter.cpp \
 	llamafile/vlib_video/vlib_video_session.cpp \
+	llamafile/webcam_agent.cpp \
 	llamafile/string.cpp \
 	llamafile/wiki_cli.cpp \
 	llamafile/xterm.cpp \
@@ -325,6 +326,14 @@ o/$(MODE)/llamafile/mcp_host.o: llamafile/mcp_host.cpp
 # loopback HTTP (cpp-httplib), so it needs the server include path (server-tools.h)
 # like server.cpp / mcp_host.cpp do.
 o/$(MODE)/llamafile/agent_loop.o: llamafile/agent_loop.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(LLAMAFILE_CPPFLAGS) $(LLAMAFILE_SERVER_INCS) -c -o $@ $<
+
+# webcam_agent.cpp: the /agent/* HTTP+SSE endpoints (server "webcam agent"
+# mode). It registers routes on the server's http context and reuses
+# server_http_res/server_http_req, so it needs the server include path
+# (server-http.h) like server.cpp / mcp_host.cpp / agent_loop.cpp do.
+o/$(MODE)/llamafile/webcam_agent.o: llamafile/webcam_agent.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(LLAMAFILE_CPPFLAGS) $(LLAMAFILE_SERVER_INCS) -c -o $@ $<
 

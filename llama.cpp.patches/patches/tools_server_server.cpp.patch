@@ -1,5 +1,4 @@
 diff --git a/llama.cpp/tools/server/server.cpp b/llama.cpp/tools/server/server.cpp
-index bf3680b9f..f07896513 100644
 --- a/llama.cpp/tools/server/server.cpp
 +++ b/llama.cpp/tools/server/server.cpp
 @@ -14,6 +14,7 @@
@@ -10,7 +9,7 @@ index bf3680b9f..f07896513 100644
  #include <signal.h>
  #include <thread> // for std::thread::hardware_concurrency
  
-@@ -21,6 +22,25 @@
+@@ -21,6 +22,31 @@
  #include <windows.h>
  #endif
  
@@ -31,12 +30,18 @@ index bf3680b9f..f07896513 100644
 +                                   const std::string & api_key,
 +                                   const std::string & model, int n_parallel);
 +int  llamafile_agents_register_tools(server_tools & registry);
++// llamafile WEBCAM AGENT: register /agent/* HTTP+SSE endpoints driving a
++// vlib-video continuous session. (defined in llamafile/webcam_agent.cpp)
++bool llamafile_webcam_enabled();
++void llamafile_webcam_register_routes(server_http_context & http,
++                                      const common_params & params,
++                                      std::function<llama_context *()> get_server_ctx);
 +#endif
 +
  static std::function<void(int)> shutdown_handler;
  static std::atomic_flag is_terminating = ATOMIC_FLAG_INIT;
  
-@@ -71,15 +91,26 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t
+@@ -71,15 +97,26 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t
      };
  }
  
@@ -67,7 +72,7 @@ index bf3680b9f..f07896513 100644
      common_init();
  
      if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
-@@ -239,13 +270,48 @@ int llama_server(int argc, char ** argv) {
+@@ -239,13 +276,49 @@ int llama_server(int argc, char ** argv) {
          ctx_http.post("/cors-proxy",      ex_wrapper(proxy_handler_post));
      }
      // EXPERIMENTAL built-in tools
@@ -78,7 +83,8 @@ index bf3680b9f..f07896513 100644
 +    // (--mcp) or sub-agents are requested (--agents), even when no built-in
 +    // tools (--tools) were requested.
 +    enable_tools = enable_tools || llamafile_mcp_server_count() > 0
-+                                || llamafile_agents_enabled();
++                                || llamafile_agents_enabled()
++                                || llamafile_webcam_enabled();
 +#endif
 +    if (enable_tools) {
          try {
@@ -117,7 +123,27 @@ index bf3680b9f..f07896513 100644
          SRV_WRN("%s", "-----------------\n");
          SRV_WRN("%s", "Built-in tools are enabled, do not expose server to untrusted environments\n");
          SRV_WRN("%s", "This feature is EXPERIMENTAL and may be changed in the future\n");
-@@ -332,6 +398,13 @@ int llama_server(int argc, char ** argv) {
+@@ -254,6 +327,19 @@ int llama_server(int argc, char ** argv) {
+         ctx_http.post("/tools",           ex_wrapper(tools.handle_post));
+     }
+ 
++#ifdef LLAMAFILE_TUI
++    // llamafile WEBCAM AGENT: register /agent/* endpoints (HTTP + SSE) that
++    // drive a dedicated vlib-video continuous session. Routes are registered
++    // BEFORE the HTTP server starts; the session's llama_context is obtained
++    // lazily (the model loads after the HTTP server is already serving /health).
++    if (llamafile_webcam_enabled()) {
++        llamafile_webcam_register_routes(
++            ctx_http, params,
++            [&ctx_server]() -> llama_context * { return ctx_server.get_llama_context(); });
++        SRV_INF("%s", "webcam-agent: /agent/{start,frame,events,stop} endpoints registered\n");
++    }
++#endif
++
+     //
+     // Start the server
+     //
+@@ -332,6 +418,13 @@ int llama_server(int argc, char ** argv) {
              // this will unblock start_loop()
              ctx_server.terminate();
          };
@@ -131,7 +157,7 @@ index bf3680b9f..f07896513 100644
      }
  
      // TODO: refactor in common/console
-@@ -368,6 +441,11 @@ int llama_server(int argc, char ** argv) {
+@@ -368,6 +461,11 @@ int llama_server(int argc, char ** argv) {
      } else {
          SRV_INF("server is listening on %s\n", ctx_http.listening_address.c_str());
  
@@ -143,7 +169,7 @@ index bf3680b9f..f07896513 100644
          // optionally, notify router server that this instance is ready
          std::thread monitor_thread;
          if (child.is_child()) {
-@@ -392,5 +470,48 @@ int llama_server(int argc, char ** argv) {
+@@ -392,5 +490,48 @@ int llama_server(int argc, char ** argv) {
          }
      }
  

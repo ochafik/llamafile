@@ -96,6 +96,14 @@ struct session_params {
     std::string media_marker;            // empty -> mtmd_default_marker()
     std::string per_frame_label_format = "[Frame %d] "; // %d -> frame index
     std::string per_frame_instruction  = "\nAnalyze and call a tool.";
+
+    // Chat-template fragments for feeding an EXTERNAL tool's result back into
+    // the session (the ACTION_OTHER mini tool-loop, doc 03 §agentic-loop). The
+    // tool result text is wrapped between these and decoded as a fresh turn,
+    // then generation resumes WITHOUT a new frame / rewind. Defaults follow
+    // Qwen's <tool_response> convention.
+    std::string tool_response_prefix = "<|im_start|>user\n<tool_response>\n";
+    std::string tool_response_suffix = "\n</tool_response><|im_end|>\n<|im_start|>assistant\n";
 };
 
 struct session {
@@ -118,6 +126,15 @@ struct session {
     // persists across rewinds (matches MLX behaviour).
     virtual action process_frame(const unsigned char * cur_rgb,
                                  const std::string & audio_text_optional = {}) = 0;
+
+    // Feed an EXTERNAL tool's result back into the session and resume the
+    // per-frame agentic loop. Call this after process_frame() returns
+    // ACTION_OTHER and the caller has executed the external tool. The current
+    // frame's KV is kept (no rewind); only the tool-response turn + the model's
+    // continued generation are appended. Returns the next action, which may be
+    // another ACTION_OTHER (another tool round) or a terminal
+    // speak/note/ignore/none. No-op before any frame: returns ACTION_NONE.
+    virtual action continue_after_tool(const std::string & tool_result) = 0;
 
     // Direct rewind hook. Trims attention KV to the most recent pre-frame mark
     // and restores n_past. Recurrent state is intentionally NOT rolled back.

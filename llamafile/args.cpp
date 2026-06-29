@@ -20,6 +20,7 @@
 #include "llamafile.h"
 #include "mcp_host.h"
 #include "agent_loop.h"
+#include "webcam_agent.h"
 
 #include <cstring>
 #include <filesystem>
@@ -73,6 +74,7 @@ static bool is_llamafile_flag(const char* arg) {
            strcmp(arg, "--ascii") == 0 ||
            strcmp(arg, "--nologo") == 0 ||
            strcmp(arg, "--nothink") == 0 ||
+           strcmp(arg, "--webcam-agent") == 0 ||
            strcmp(arg, "--version") == 0;
 }
 
@@ -157,6 +159,14 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
         // here so it never reaches llama.cpp's parser.
         if (strcmp(arg, "--agents") == 0) {
             llamafile_agents_enable();
+            continue;
+        }
+
+        // --webcam-agent: enable the server "webcam agent" mode (/agent/*
+        // HTTP+SSE endpoints driving a vlib-video continuous session, step 2).
+        // llamafile-owned flag; consumed here so it never reaches llama.cpp.
+        if (strcmp(arg, "--webcam-agent") == 0) {
+            llamafile_webcam_enable();
             continue;
         }
 

@@ -238,6 +238,53 @@ public:
         return result;
     }
 
+    action continue_after_tool(const std::string & tool_result) override {
+        action result;
+        if (m_frame_count == 0) return result;  // no frame yet
+
+        // Decode the tool-response turn (kept in KV; no rewind — the frame
+        // already produced a real reaction by calling the external tool).
+        std::string text = m_params.tool_response_prefix + tool_result +
+                           m_params.tool_response_suffix;
+        std::vector<llama_token> toks = tokenize(text, /*add_special=*/false, /*parse_special=*/true);
+        if (!toks.empty() && decode_text_tokens(toks) != 0) {
+            result.kind = ACTION_NONE;
+            return result;
+        }
+
+        // Resume generation and parse the next action.
+        std::string assistant_text = generate_until_stop(m_params.max_tool_tokens);
+        result.raw_assistant_text = assistant_text;
+
+        tool_call tc;
+        if (!parse_tool_call(assistant_text, tc)) {
+            result.kind = ACTION_NONE;
+            return result;
+        }
+        result.call = tc;
+
+        const std::string & name = tc.name;
+        if (name == "do_nothing" || name == "ignore_frame") {
+            // In a continuation we do NOT rewind: the frame already reacted.
+            result.kind = ACTION_DO_NOTHING;
+        } else if (name == "speak") {
+            result.kind = ACTION_SPEAK;
+            if (m_speak_cb) {
+                auto it = tc.arguments.find("text");
+                m_speak_cb(it != tc.arguments.end() ? it->second : std::string{}, m_speak_user);
+            }
+        } else if (name == "note") {
+            result.kind = ACTION_NOTE;
+            if (m_note_cb) {
+                auto it = tc.arguments.find("observation");
+                m_note_cb(it != tc.arguments.end() ? it->second : std::string{}, m_note_user);
+            }
+        } else {
+            result.kind = ACTION_OTHER;
+        }
+        return result;
+    }
+
     void rewind_last() override {
         if (m_pending_rewind_floor < 0) return;
         llama_memory_t mem = llama_get_memory(m_lctx);

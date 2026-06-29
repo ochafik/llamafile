@@ -56,3 +56,25 @@ int llamafile_mcp_register_tools(server_tools & registry);
 // multiple times. (On hard `_exit()` paths this is skipped, but children read
 // stdin and exit on the EOF they get when our fds close at process death.)
 void llamafile_mcp_shutdown();
+
+// ---------------------------------------------------------------------------
+// Direct tool access (used by the webcam-agent's per-frame ACTION_OTHER loop)
+// ---------------------------------------------------------------------------
+// These let llamafile-owned code (webcam_agent.cpp) execute an MCP tool
+// WITHOUT going through the /tools HTTP registry. They operate on the servers
+// already spawned by llamafile_mcp_register_tools(), so they only work after
+// that has been called (which happens once --mcp servers are bridged).
+
+// True if any spawned MCP server exposes a tool with this (bare MCP) name.
+bool llamafile_mcp_has_tool(const std::string & name);
+
+// Call a bridged MCP tool by its bare name with JSON-encoded arguments. Returns
+// the tool's text result, or a "(mcp error: ...)" string on failure. Intended
+// to run on a worker thread with a generous stack (JSON + subprocess I/O).
+std::string llamafile_mcp_call_tool(const std::string & name,
+                                    const std::string & arguments_json);
+
+// A newline-delimited, LLM-readable description of every bridged MCP tool
+// (name, description, JSON-schema arguments), suitable for merging into a
+// system prompt so the model knows it may call them. Empty if none.
+std::string llamafile_mcp_tools_prompt();

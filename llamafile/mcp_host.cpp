@@ -435,3 +435,85 @@ void llamafile_mcp_shutdown() {
     }
     g_servers.clear();
 }
+
+// ---------------------------------------------------------------------------
+// direct tool access (webcam-agent ACTION_OTHER loop)
+// ---------------------------------------------------------------------------
+namespace {
+
+// Flatten an MCP tools/call result (or JSON-RPC error) into plain text.
+std::string mcp_result_to_text(const json & result) {
+    if (result.is_null()) return "(mcp error: server did not respond)";
+    if (result.is_object() && result.contains("error")) {
+        try {
+            if (result["error"].is_object() && result["error"].contains("message")) {
+                return "(mcp error: " + result["error"]["message"].get<std::string>() + ")";
+            }
+            return "(mcp error: " + result["error"].dump() + ")";
+        } catch (...) { return "(mcp error)"; }
+    }
+    bool is_error = result.value("isError", false);
+    std::string text;
+    if (result.contains("content") && result["content"].is_array()) {
+        for (auto & block : result["content"]) {
+            if (block.is_object() && block.value("type", "") == "text") {
+                text += block.value("text", "");
+            }
+        }
+    }
+    if (text.empty()) text = result.dump();
+    return is_error ? "(mcp error: " + text + ")" : text;
+}
+
+bool server_has_tool(const McpServer * s, const std::string & name) {
+    if (!s) return false;
+    for (const auto & def : s->tool_defs) {
+        try {
+            if (def.at("name").get<std::string>() == name) return true;
+        } catch (...) {}
+    }
+    return false;
+}
+
+}  // namespace
+
+bool llamafile_mcp_has_tool(const std::string & name) {
+    for (const auto & s : g_servers) {
+        if (server_has_tool(s.get(), name)) return true;
+    }
+    return false;
+}
+
+std::string llamafile_mcp_call_tool(const std::string & name,
+                                    const std::string & arguments_json) {
+    json args = json::parse(arguments_json.empty() ? "{}" : arguments_json,
+                            nullptr, /*allow_exceptions=*/false);
+    if (args.is_discarded() || !args.is_object()) args = json::object();
+    for (const auto & s : g_servers) {
+        if (!s || !s->alive) continue;
+        if (!server_has_tool(s.get(), name)) continue;
+        json result = s->call(name, args);
+        return mcp_result_to_text(result);
+    }
+    return "(mcp error: no MCP server exposes tool '" + name + "')";
+}
+
+std::string llamafile_mcp_tools_prompt() {
+    std::string out;
+    for (const auto & s : g_servers) {
+        if (!s) continue;
+        for (const auto & def : s->tool_defs) {
+            try {
+                std::string n = def.at("name").get<std::string>();
+                std::string d = (def.contains("description") && def["description"].is_string())
+                                    ? def["description"].get<std::string>() : std::string();
+                out += "- " + n + ": " + d;
+                if (def.contains("inputSchema") && def["inputSchema"].is_object()) {
+                    out += " arguments (JSON schema): " + def["inputSchema"].dump();
+                }
+                out += "\n";
+            } catch (...) {}
+        }
+    }
+    return out;
+}
