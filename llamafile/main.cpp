@@ -107,6 +107,10 @@ extern int wiki_cli_main(int argc, char **argv);
 // `llamafile mcp-server ...` — MCP server over stdio; see mcp_server.cpp.
 extern int mcp_server_main(int argc, char **argv);
 
+// `llamafile mcp-probe <cmd-or-url> [tool] [args]` — model-free MCP HOST probe
+// (drives a single MCP server over stdio OR remote HTTP); see mcp_host.cpp.
+#include "mcp_host.h"
+
 // `llamafile wikidata ...` CLI (offline Wikidata fact store); see wikidata_cli.cpp.
 extern int wikidata_cli_main(int argc, char **argv);
 
@@ -314,6 +318,15 @@ int main(int argc, char **argv) {
     // tools. Dispatched early — needs only the ZIM reader, no model/server/GPU.
     if (argc > 1 && !strcmp(argv[1], "mcp-server")) {
         return mcp_server_main(argc, argv);
+    }
+
+    // `llamafile mcp-probe <command-or-url> [tool] [args-json]` subcommand: the
+    // MCP HOST client probe. Connects ONE external MCP server — a spawned stdio
+    // command OR a remote Streamable-HTTP URL — runs the handshake, prints its
+    // tools (and an optional tools/call result) as JSON, then exits. No model,
+    // no server, no GPU; dispatched early like mcp-server.
+    if (argc > 1 && !strcmp(argv[1], "mcp-probe")) {
+        return llamafile_mcp_probe_main(argc, argv);
     }
 
     // `llamafile mtmd-video-cli ...` subcommand: run a continuous-video VLM

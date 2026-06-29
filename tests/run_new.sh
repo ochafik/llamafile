@@ -64,6 +64,12 @@ python3 tests/integration/mcp_server_test.py "$LLAMAFILE_BIN"
 
 echo
 echo "########################################################"
+echo "# 3b. MCP host transports: remote Streamable-HTTP e2e (mcp-probe)"
+echo "########################################################"
+python3 tests/integration/mcp_http_test.py "$LLAMAFILE_BIN"
+
+echo
+echo "########################################################"
 echo "# 4. MCP host-bridge (model-gated)"
 echo "########################################################"
 sh tests/integration/mcp_bridge_gated.sh

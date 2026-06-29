@@ -17,16 +17,35 @@
 
 // llamafile MCP HOST — see mcp_host.h.
 //
-// An MCP client that spawns external MCP servers over stdio (newline-delimited
-// JSON-RPC 2.0) and bridges their tools into the server's `/tools` registry.
-// The stdio client shape is the validated P3 prototype
-// (ddocs/prototypes/p3-mcp_client.cpp): posix_spawn + pipe2 + per-line JSON-RPC.
+// An MCP client that connects to external MCP servers and bridges their tools
+// into the server's `/tools` registry. There are TWO transports behind a single
+// `McpServer`:
+//
+//   * stdio (the validated P3 prototype shape): posix_spawn + pipe2 +
+//     newline-delimited JSON-RPC 2.0. A `--mcp '<command line>'` whose value is
+//     a command spawns a subprocess. (ddocs/prototypes/p3-mcp_client.cpp)
+//
+//   * remote Streamable-HTTP (MCP spec 2025-03-26): HTTP POST <endpoint> of one
+//     JSON-RPC message with `Accept: application/json, text/event-stream`; the
+//     reply is EITHER a single application/json body OR a text/event-stream SSE
+//     body (`data:` lines parsed as JSON-RPC messages). The `Mcp-Session-Id`
+//     response header from `initialize` is echoed on every later request. A
+//     `--mcp 'http://host:port/path'` whose value is an http/https URL uses this
+//     transport. (`--mcp-http <url>` is an explicit alias; see args.cpp.)
+//
+// cosmocc has NO in-binary TLS, so an `https://` endpoint cannot be reached
+// directly — it fails with a clear message pointing at a local http:// proxy.
+//
+// Both transports expose the same surface (initialize -> notifications/initialized
+// -> tools/list -> tools/call) and are bridged identically via `McpBridgedTool`.
 
 #include "mcp_host.h"
 
 #include "server-tools.h"  // server_tool, server_tools (llama.cpp/tools/server)
 
 #include <nlohmann/json.hpp>
+
+#include <cpp-httplib/httplib.h>  // vendored; also used by browser_tool.cpp
 
 #include <fcntl.h>
 #include <signal.h>
@@ -35,6 +54,7 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -92,36 +112,60 @@ std::vector<std::string> tokenize(const std::string & s) {
     return out;
 }
 
-// ---------------------------------------------------------------------------
-// a single spawned MCP server connection
-// ---------------------------------------------------------------------------
-struct McpServer {
-    std::string cmdline;     // original --mcp string (for diagnostics)
-    std::string name;        // serverInfo.name, or a fallback
-    pid_t       pid = -1;
-    FILE *      to_child   = nullptr;  // we write JSON-RPC requests here
-    FILE *      from_child = nullptr;  // we read JSON-RPC responses here
-    bool        alive = false;
-    int         next_id = 0;
-    std::mutex  io_mu;       // serialize one request/response at a time
-    std::vector<json> tool_defs;  // raw MCP tool objects from tools/list
+// An `--mcp` value is a REMOTE endpoint when it is an http/https URL; otherwise
+// it is a command line to spawn over stdio.
+bool looks_like_url(const std::string & s) {
+    return s.rfind("http://", 0) == 0 || s.rfind("https://", 0) == 0;
+}
 
-    // Spawn the process and wire stdin/stdout to pipes.
-    bool spawn() {
+// ---------------------------------------------------------------------------
+// transport interface: how an McpServer ships one JSON-RPC message and gets the
+// matching reply back. stdio (spawned subprocess) vs remote Streamable-HTTP.
+// All methods run under McpServer::io_mu (one request in flight at a time), so
+// implementations need not lock.
+// ---------------------------------------------------------------------------
+struct McpTransport {
+    virtual ~McpTransport() = default;
+
+    // Establish the transport (spawn / validate URL). On failure sets `err` and
+    // returns false. Does NOT perform the MCP handshake.
+    virtual bool start(std::string & err) = 0;
+
+    // Send a fully-formed JSON-RPC request (it carries jsonrpc/id/method[/params])
+    // and return the reply object whose `id` matches. Null json on error.
+    virtual json send_request(const json & msg, int id) = 0;
+
+    // Fire-and-forget a JSON-RPC notification (no id, no reply expected).
+    virtual void send_notify(const json & msg) = 0;
+
+    virtual void stop() = 0;
+    virtual bool alive() const = 0;
+};
+
+// ---------------------------------------------------------------------------
+// stdio transport — posix_spawn + pipe2 + newline-delimited JSON-RPC (P3 shape)
+// ---------------------------------------------------------------------------
+struct StdioTransport : McpTransport {
+    std::string cmdline;
+    pid_t  pid = -1;
+    FILE * to_child   = nullptr;  // we write JSON-RPC requests here
+    FILE * from_child = nullptr;  // we read JSON-RPC responses here
+    bool   alive_ = false;
+
+    bool alive() const override { return alive_; }
+
+    bool start(std::string & err) override {
         std::vector<std::string> argv_s = tokenize(cmdline);
-        if (argv_s.empty()) {
-            fprintf(stderr, "mcp-host: empty --mcp command line\n");
-            return false;
-        }
+        if (argv_s.empty()) { err = "empty --mcp command line"; return false; }
         std::vector<char *> argv;
         argv.reserve(argv_s.size() + 1);
         for (auto & a : argv_s) argv.push_back(const_cast<char *>(a.c_str()));
         argv.push_back(nullptr);
 
         int c_in[2], c_out[2];
-        if (pipe2(c_in, 0) != 0) { perror("mcp-host: pipe2"); return false; }
+        if (pipe2(c_in, 0) != 0) { err = std::string("pipe2: ") + strerror(errno); return false; }
         if (pipe2(c_out, 0) != 0) {
-            perror("mcp-host: pipe2");
+            err = std::string("pipe2: ") + strerror(errno);
             close(c_in[0]); close(c_in[1]);
             return false;
         }
@@ -138,8 +182,7 @@ struct McpServer {
         int rc = posix_spawnp(&pid, argv[0], &fa, nullptr, argv.data(), environ);
         posix_spawn_file_actions_destroy(&fa);
         if (rc != 0) {
-            fprintf(stderr, "mcp-host: failed to spawn \"%s\": %s\n",
-                    argv[0], strerror(rc));
+            err = std::string("failed to spawn \"") + argv[0] + "\": " + strerror(rc);
             close(c_in[0]); close(c_in[1]);
             close(c_out[0]); close(c_out[1]);
             pid = -1;
@@ -150,16 +193,13 @@ struct McpServer {
         close(c_out[1]);
         to_child   = fdopen(c_in[1],  "w");
         from_child = fdopen(c_out[0], "r");
-        if (!to_child || !from_child) {
-            fprintf(stderr, "mcp-host: fdopen failed\n");
-            return false;
-        }
-        alive = true;
+        if (!to_child || !from_child) { err = "fdopen failed"; return false; }
+        alive_ = true;
         return true;
     }
 
-    // Send one JSON-RPC message. Returns false on write failure (dead pipe).
-    bool send(const json & msg) {
+    // Write one JSON-RPC message line. Returns false on dead pipe.
+    bool write_msg(const json & msg) {
         std::string line = msg.dump();
         line.push_back('\n');
         if (fwrite(line.data(), 1, line.size(), to_child) != line.size()) return false;
@@ -167,10 +207,9 @@ struct McpServer {
         return true;
     }
 
-    // Read one newline-delimited line from the child into `out`. Uses a heap
-    // string (NOT a large stack buffer) because tool calls run on HTTP worker
-    // threads whose stacks are small under cosmocc — a multi-KB stack array
-    // would overflow and silently crash the process. Returns false at EOF.
+    // Read one newline-delimited line into `out`. Uses a heap string (NOT a big
+    // stack buffer) because tool calls run on small-stack HTTP worker threads
+    // under cosmocc. Returns false at EOF.
     bool read_line(std::string & out) {
         out.clear();
         int c;
@@ -181,9 +220,11 @@ struct McpServer {
         return !out.empty();  // trailing partial line at EOF
     }
 
-    // Read response lines until one carries the expected id; ignore anything
-    // else (notifications, log lines that happen to be JSON, etc).
-    json recv_for(int id) {
+    json send_request(const json & msg, int id) override {
+        if (!alive_) return json();
+        if (!write_msg(msg)) { alive_ = false; return json(); }
+        // Read response lines until one carries the expected id; ignore anything
+        // else (notifications, log lines that happen to be JSON, etc).
         std::string line;
         while (read_line(line)) {
             json j = json::parse(line, nullptr, /*allow_exceptions=*/false);
@@ -193,29 +234,230 @@ struct McpServer {
                 return j;
             }
         }
-        return json();  // EOF / error
+        alive_ = false;  // pipe closed -> server died
+        return json();
+    }
+
+    void send_notify(const json & msg) override {
+        if (!alive_) return;
+        if (!write_msg(msg)) alive_ = false;
+    }
+
+    void stop() override {
+        if (to_child)   { fclose(to_child);   to_child = nullptr; }  // EOF -> child exits
+        if (from_child) { fclose(from_child); from_child = nullptr; }
+        if (pid > 0) {
+            int st = 0;
+            // give it a moment to exit on EOF, then SIGTERM
+            for (int i = 0; i < 50; ++i) {
+                pid_t r = waitpid(pid, &st, WNOHANG);
+                if (r == pid || r < 0) { pid = -1; break; }
+                usleep(10 * 1000);
+            }
+            if (pid > 0) { kill(pid, SIGTERM); waitpid(pid, &st, 0); pid = -1; }
+        }
+        alive_ = false;
+    }
+};
+
+// ---------------------------------------------------------------------------
+// remote Streamable-HTTP transport (MCP 2025-03-26)
+// ---------------------------------------------------------------------------
+struct HttpTransport : McpTransport {
+    std::string url;         // original --mcp value (diagnostics)
+    std::string host;
+    int         port = 80;
+    std::string path = "/";  // POST endpoint path
+    bool        is_https = false;
+    std::string session_id;  // captured from initialize's Mcp-Session-Id header
+    bool        ok = false;
+    std::string last_error;
+
+    bool alive() const override { return ok; }
+
+    // scheme://host[:port][/path]
+    bool parse(const std::string & u) {
+        url = u;
+        std::string rest = u;
+        std::string scheme = "http";
+        size_t s = rest.find("://");
+        if (s != std::string::npos) { scheme = rest.substr(0, s); rest = rest.substr(s + 3); }
+        is_https = (scheme == "https");
+        size_t slash = rest.find('/');
+        std::string hostport = (slash == std::string::npos) ? rest : rest.substr(0, slash);
+        path = (slash == std::string::npos) ? std::string("/") : rest.substr(slash);
+        if (path.empty()) path = "/";
+        size_t colon = hostport.find(':');
+        if (colon != std::string::npos) {
+            host = hostport.substr(0, colon);
+            port = atoi(hostport.substr(colon + 1).c_str());
+        } else {
+            host = hostport;
+            port = is_https ? 443 : 80;
+        }
+        return !host.empty() && port > 0;
+    }
+
+    bool start(std::string & err) override {
+        if (is_https) {
+            err = "remote MCP endpoint \"" + url + "\" uses https://, but this build has no "
+                  "in-binary TLS (cosmocc). Terminate TLS in a local proxy and point --mcp at "
+                  "its http://127.0.0.1 address instead.";
+            last_error = err;
+            ok = false;
+            return false;
+        }
+        ok = true;
+        return true;
+    }
+
+    void stop() override { ok = false; }
+
+    httplib::Headers make_headers() const {
+        httplib::Headers h;
+        h.emplace("Accept", "application/json, text/event-stream");
+        if (!session_id.empty()) h.emplace("Mcp-Session-Id", session_id);
+        return h;
+    }
+
+    // Pull every JSON-RPC message out of a response body. For application/json
+    // it is one object (or a batch array); for text/event-stream it is the
+    // `data:` payloads of the SSE events.
+    static void collect_messages(const std::string & body, const std::string & ctype,
+                                 std::vector<json> & out) {
+        bool sse = ctype.find("text/event-stream") != std::string::npos;
+        if (!sse) {
+            json j = json::parse(body, nullptr, /*allow_exceptions=*/false);
+            if (!j.is_discarded()) {
+                if (j.is_array()) { for (auto & e : j) out.push_back(e); }
+                else              { out.push_back(j); }
+            }
+            return;
+        }
+        // SSE: events separated by a blank line; a `data:` payload may span
+        // multiple lines (joined by '\n'). Parse each event's data as JSON.
+        std::string data;
+        bool have_data = false;
+        auto flush = [&]() {
+            if (have_data) {
+                json j = json::parse(data, nullptr, /*allow_exceptions=*/false);
+                if (!j.is_discarded()) out.push_back(j);
+            }
+            data.clear();
+            have_data = false;
+        };
+        size_t i = 0, n = body.size();
+        while (i < n) {
+            size_t eol = body.find('\n', i);
+            std::string line = body.substr(i, (eol == std::string::npos ? n : eol) - i);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            i = (eol == std::string::npos) ? n : eol + 1;
+            if (line.empty()) { flush(); continue; }       // event boundary
+            if (line[0] == ':') continue;                  // SSE comment
+            if (line.rfind("data:", 0) == 0) {
+                std::string v = line.substr(5);
+                if (!v.empty() && v[0] == ' ') v.erase(0, 1);
+                if (have_data) data.push_back('\n');
+                data += v;
+                have_data = true;
+            }
+            // other SSE fields (event:, id:, retry:) ignored
+        }
+        flush();
+    }
+
+    json send_request(const json & msg, int id) override {
+        if (!ok) return json();
+        httplib::Client cli(host, port);
+        cli.set_connection_timeout(5, 0);
+        cli.set_read_timeout(60, 0);
+        httplib::Result res = cli.Post(path, make_headers(), msg.dump(), "application/json");
+        if (!res) {
+            last_error = "no HTTP response from " + host + ":" + std::to_string(port) + path +
+                         " (connect/read failed)";
+            return json();
+        }
+        if (res->status / 100 != 2) {
+            last_error = "HTTP status " + std::to_string(res->status) + " from " + path;
+            return json();
+        }
+        if (session_id.empty()) {
+            std::string sid = res->get_header_value("Mcp-Session-Id");
+            if (!sid.empty()) session_id = sid;
+        }
+        std::vector<json> msgs;
+        collect_messages(res->body, res->get_header_value("Content-Type"), msgs);
+        for (auto & m : msgs) {
+            if (m.is_object() && m.contains("id") && m["id"].is_number_integer() &&
+                m["id"].get<int>() == id) {
+                return m;
+            }
+        }
+        last_error = "no matching JSON-RPC reply (id=" + std::to_string(id) + ") in HTTP response";
+        return json();
+    }
+
+    void send_notify(const json & msg) override {
+        if (!ok) return;
+        httplib::Client cli(host, port);
+        cli.set_connection_timeout(5, 0);
+        cli.set_read_timeout(10, 0);
+        cli.Post(path, make_headers(), msg.dump(), "application/json");  // 202 expected; ignore
+    }
+};
+
+// ---------------------------------------------------------------------------
+// a single MCP server connection (transport-agnostic)
+// ---------------------------------------------------------------------------
+struct McpServer {
+    std::string spec;        // original --mcp string (command line OR url)
+    std::string name;        // serverInfo.name, or a fallback
+    std::unique_ptr<McpTransport> transport;
+    int         next_id = 0;
+    std::mutex  io_mu;       // serialize one request/response at a time
+    std::vector<json> tool_defs;  // raw MCP tool objects from tools/list
+
+    bool alive() const { return transport && transport->alive(); }
+
+    // Build the right transport for `spec`, start it, and run the handshake.
+    bool connect() {
+        std::string err;
+        if (looks_like_url(spec)) {
+            auto t = std::make_unique<HttpTransport>();
+            if (!t->parse(spec)) {
+                fprintf(stderr, "mcp-host: malformed MCP URL \"%s\"\n", spec.c_str());
+                return false;
+            }
+            transport = std::move(t);
+        } else {
+            auto t = std::make_unique<StdioTransport>();
+            t->cmdline = spec;
+            transport = std::move(t);
+        }
+        if (!transport->start(err)) {
+            fprintf(stderr, "mcp-host: %s\n", err.c_str());
+            return false;
+        }
+        return handshake();
     }
 
     // Synchronous request/response under the io lock. Returns null json on error.
     json request(const std::string & method, const json & params) {
         std::lock_guard<std::mutex> lock(io_mu);
-        if (!alive) return json();
+        if (!alive()) return json();
         int id = ++next_id;
         json msg = {{"jsonrpc", "2.0"}, {"id", id}, {"method", method}};
         if (!params.is_null()) msg["params"] = params;
-        if (!send(msg)) { alive = false; return json(); }
-        json resp = recv_for(id);
-        if (resp.is_null()) alive = false;  // pipe closed -> server died
-        return resp;
+        return transport->send_request(msg, id);
     }
 
     // Fire-and-forget notification (no id, no response).
     void notify(const std::string & method, const json & params) {
         std::lock_guard<std::mutex> lock(io_mu);
-        if (!alive) return;
+        if (!alive()) return;
         json msg = {{"jsonrpc", "2.0"}, {"method", method}};
         if (!params.is_null()) msg["params"] = params;
-        if (!send(msg)) alive = false;
+        transport->send_notify(msg);
     }
 
     // initialize -> notifications/initialized -> tools/list
@@ -225,7 +467,7 @@ struct McpServer {
                  {"capabilities", json::object()},
                  {"clientInfo", json{{"name", "llamafile"}, {"version", "1.0"}}}});
         if (init.is_null() || !init.contains("result")) {
-            fprintf(stderr, "mcp-host: initialize failed for \"%s\"\n", cmdline.c_str());
+            fprintf(stderr, "mcp-host: initialize failed for \"%s\"\n", spec.c_str());
             return false;
         }
         name = "mcp";
@@ -241,7 +483,7 @@ struct McpServer {
         json tl = request("tools/list", json(nullptr));
         if (tl.is_null() || !tl.contains("result") ||
             !tl["result"].contains("tools") || !tl["result"]["tools"].is_array()) {
-            fprintf(stderr, "mcp-host: tools/list failed for \"%s\"\n", cmdline.c_str());
+            fprintf(stderr, "mcp-host: tools/list failed for \"%s\"\n", spec.c_str());
             return false;
         }
         for (auto & t : tl["result"]["tools"]) tool_defs.push_back(t);
@@ -258,26 +500,12 @@ struct McpServer {
     }
 
     void shutdown() {
-        if (to_child)   { fclose(to_child);   to_child = nullptr; }  // EOF -> child exits
-        if (from_child) { fclose(from_child); from_child = nullptr; }
-        if (pid > 0) {
-            int st = 0;
-            // give it a moment to exit on EOF, then SIGTERM
-            for (int i = 0; i < 50; ++i) {
-                pid_t r = waitpid(pid, &st, WNOHANG);
-                if (r == pid || r < 0) { pid = -1; return; }
-                usleep(10 * 1000);
-            }
-            kill(pid, SIGTERM);
-            waitpid(pid, &st, 0);
-            pid = -1;
-        }
-        alive = false;
+        if (transport) transport->stop();
     }
 };
 
 // ---------------------------------------------------------------------------
-// a server_tool that forwards to an MCP subprocess
+// a server_tool that forwards to an MCP server (stdio or http)
 // ---------------------------------------------------------------------------
 struct McpBridgedTool : server_tool {
     McpServer * server;       // not owned
@@ -309,12 +537,12 @@ struct McpBridgedTool : server_tool {
     }
 
     json invoke(json params) override {
-        if (!server || !server->alive) {
-            return {{"error", "MCP server is unavailable (subprocess not running)"}};
+        if (!server || !server->alive()) {
+            return {{"error", "MCP server is unavailable (transport not running)"}};
         }
         json result = server->call(mcp_name, params.is_null() ? json::object() : params);
         if (result.is_null()) {
-            return {{"error", "MCP server did not respond (subprocess may have died)"}};
+            return {{"error", "MCP server did not respond (transport may have died)"}};
         }
         if (result.contains("error")) {
             // JSON-RPC error object
@@ -349,7 +577,7 @@ struct McpBridgedTool : server_tool {
 // ---------------------------------------------------------------------------
 // module state
 // ---------------------------------------------------------------------------
-std::vector<std::string> g_cmdlines;
+std::vector<std::string> g_specs;
 std::vector<std::unique_ptr<McpServer>> g_servers;
 
 }  // namespace
@@ -358,11 +586,11 @@ std::vector<std::unique_ptr<McpServer>> g_servers;
 // public API
 // ---------------------------------------------------------------------------
 void llamafile_mcp_add_server(const std::string & cmdline) {
-    if (!cmdline.empty()) g_cmdlines.push_back(cmdline);
+    if (!cmdline.empty()) g_specs.push_back(cmdline);
 }
 
 int llamafile_mcp_server_count() {
-    return (int)g_cmdlines.size();
+    return (int)g_specs.size();
 }
 
 int llamafile_mcp_register_tools(server_tools & registry) {
@@ -374,20 +602,16 @@ int llamafile_mcp_register_tools(server_tools & registry) {
     signal(SIGPIPE, SIG_IGN);
 
     int total = 0;
-    for (const auto & cmd : g_cmdlines) {
+    for (const auto & spec : g_specs) {
         auto srv = std::make_unique<McpServer>();
-        srv->cmdline = cmd;
-        if (!srv->spawn()) {
-            fprintf(stderr, "mcp-host: skipping \"%s\" (spawn failed)\n", cmd.c_str());
-            continue;
-        }
-        if (!srv->handshake()) {
-            fprintf(stderr, "mcp-host: skipping \"%s\" (handshake failed)\n", cmd.c_str());
+        srv->spec = spec;
+        if (!srv->connect()) {
+            fprintf(stderr, "mcp-host: skipping \"%s\" (connect/handshake failed)\n", spec.c_str());
             srv->shutdown();
             continue;
         }
         fprintf(stderr, "mcp-host: \"%s\" up (server=%s, %zu tool(s))\n",
-                cmd.c_str(), srv->name.c_str(), srv->tool_defs.size());
+                spec.c_str(), srv->name.c_str(), srv->tool_defs.size());
 
         McpServer * srv_ptr = srv.get();
         for (auto & def : srv->tool_defs) {
@@ -490,7 +714,7 @@ std::string llamafile_mcp_call_tool(const std::string & name,
                             nullptr, /*allow_exceptions=*/false);
     if (args.is_discarded() || !args.is_object()) args = json::object();
     for (const auto & s : g_servers) {
-        if (!s || !s->alive) continue;
+        if (!s || !s->alive()) continue;
         if (!server_has_tool(s.get(), name)) continue;
         json result = s->call(name, args);
         return mcp_result_to_text(result);
@@ -516,4 +740,55 @@ std::string llamafile_mcp_tools_prompt() {
         }
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// `llamafile mcp-probe <cmd-or-url> [tool] [args-json]` — model-free harness
+// ---------------------------------------------------------------------------
+// Connects ONE MCP server (stdio command line OR http URL), runs the handshake,
+// and prints a single JSON object to stdout:
+//
+//   {"server": <name>, "transport": "stdio"|"http",
+//    "tools": [<raw MCP tool defs>],
+//    "call": <tools/call result>}   // only if [tool] given
+//
+// Diagnostics go to stderr; stdout stays pure JSON. This exercises BOTH
+// transports end-to-end through the real binary without loading a model, and is
+// what the hermetic integration tests drive.
+int llamafile_mcp_probe_main(int argc, char ** argv) {
+    if (argc < 3) {
+        fprintf(stderr, "usage: llamafile mcp-probe <command-or-url> [tool] [args-json]\n");
+        return 2;
+    }
+    signal(SIGPIPE, SIG_IGN);
+
+    McpServer srv;
+    srv.spec = argv[2];
+    bool http = looks_like_url(srv.spec);
+    if (!srv.connect()) {
+        fprintf(stderr, "mcp-probe: failed to connect/handshake \"%s\"\n", srv.spec.c_str());
+        srv.shutdown();
+        return 1;
+    }
+
+    json out;
+    out["server"] = srv.name;
+    out["transport"] = http ? "http" : "stdio";
+    out["tools"] = json::array();
+    for (auto & t : srv.tool_defs) out["tools"].push_back(t);
+
+    if (argc >= 4) {
+        std::string tool = argv[3];
+        json args = json::object();
+        if (argc >= 5 && argv[4] && argv[4][0]) {
+            json parsed = json::parse(argv[4], nullptr, /*allow_exceptions=*/false);
+            if (!parsed.is_discarded() && parsed.is_object()) args = parsed;
+        }
+        out["call"] = srv.call(tool, args);
+    }
+
+    printf("%s\n", out.dump().c_str());
+    fflush(stdout);
+    srv.shutdown();
+    return 0;
 }

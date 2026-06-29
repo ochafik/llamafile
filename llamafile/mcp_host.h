@@ -21,12 +21,22 @@
 
 // llamafile as MCP HOST.
 //
-// llamafile's `--server` can spawn one or more external MCP servers (configured
-// via repeatable `--mcp '<command line>'` flags), discover their tools over
-// stdio JSON-RPC 2.0, and bridge each discovered tool into the server's existing
-// `/tools` registry. From there the browser web UI's agentic loop AND the model
-// (via /v1/chat/completions tool_calls dispatched back to POST /tools) can use
-// them, exactly like the built-in `read_file`/`grep`/... tools.
+// llamafile's `--server` can connect to one or more external MCP servers
+// (configured via repeatable `--mcp '<command-or-url>'` / `--mcp-http <url>`
+// flags), discover their tools, and bridge each discovered tool into the
+// server's existing `/tools` registry. From there the browser web UI's agentic
+// loop AND the model (via /v1/chat/completions tool_calls dispatched back to
+// POST /tools) can use them, exactly like the built-in `read_file`/`grep`/...
+// tools.
+//
+// Two transports are supported behind one `McpServer` (see mcp_host.cpp):
+//   * stdio: an `--mcp '<command line>'` whose value is a command is spawned and
+//     spoken to over newline-delimited JSON-RPC 2.0 (the P3 prototype shape).
+//   * remote Streamable-HTTP (MCP 2025-03-26): an `--mcp 'http(s)://...'` value
+//     (or `--mcp-http <url>`) POSTs JSON-RPC to the endpoint, handles both
+//     application/json and text/event-stream (SSE) replies, and carries the
+//     `Mcp-Session-Id` across requests. https:// needs an external TLS proxy
+//     (cosmocc has no in-binary TLS).
 //
 // This is the inward direction of the MCP duality (ddocs/06 §7.2): tools flow
 // IN from external servers. The mirror — llamafile exposing its own tools OUT —
@@ -78,3 +88,10 @@ std::string llamafile_mcp_call_tool(const std::string & name,
 // (name, description, JSON-schema arguments), suitable for merging into a
 // system prompt so the model knows it may call them. Empty if none.
 std::string llamafile_mcp_tools_prompt();
+
+// `llamafile mcp-probe <command-or-url> [tool] [args-json]` — model-free harness
+// that connects ONE MCP server (stdio command line OR http URL), runs the
+// handshake, prints {"server","transport","tools"[,"call"]} as JSON to stdout
+// and returns 0 on success. Used by the hermetic transport integration tests to
+// exercise BOTH transports through the real binary without loading a model.
+int llamafile_mcp_probe_main(int argc, char ** argv);

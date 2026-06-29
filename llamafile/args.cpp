@@ -147,6 +147,18 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
             continue;
         }
 
+        // --mcp-http '<url>': explicit alias for configuring a REMOTE
+        // Streamable-HTTP MCP server (`--mcp` also accepts an http/https URL;
+        // this flag documents intent). Same registry path. Consumed here so it
+        // never reaches llama.cpp's parser.
+        if (strcmp(arg, "--mcp-http") == 0) {
+            if (i + 1 < argc) {
+                llamafile_mcp_add_server(argv[i + 1]);
+                ++i;
+            }
+            continue;
+        }
+
         // --wikidata PATH: enable the offline Wikidata fact tools (wikidata_*)
         // in --server mode by bridging them in via our own mcp-server subprocess
         // (the same path as a manual `--mcp 'llamafile mcp-server --wikidata …'`),
