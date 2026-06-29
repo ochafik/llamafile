@@ -1,4 +1,5 @@
-diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+diff --git a/llama.cpp/tools/server/server.cpp b/llama.cpp/tools/server/server.cpp
+index bf3680b9f..dbe6ab9fd 100644
 --- a/llama.cpp/tools/server/server.cpp
 +++ b/llama.cpp/tools/server/server.cpp
 @@ -14,6 +14,7 @@
@@ -9,7 +10,7 @@ diff --git a/tools/server/server.cpp b/tools/server/server.cpp
  #include <signal.h>
  #include <thread> // for std::thread::hardware_concurrency
  
-@@ -21,6 +22,11 @@
+@@ -21,6 +22,18 @@
  #include <windows.h>
  #endif
  
@@ -18,10 +19,17 @@ diff --git a/tools/server/server.cpp b/tools/server/server.cpp
 +#include "llamafile.h"
 +#endif
 +
++#ifdef LLAMAFILE_TUI
++// llamafile MCP HOST: bridge external MCP servers' tools into /tools.
++// (defined in llamafile/mcp_host.cpp; only linked into the llamafile binary)
++int  llamafile_mcp_server_count();
++int  llamafile_mcp_register_tools(server_tools & registry);
++#endif
++
  static std::function<void(int)> shutdown_handler;
  static std::atomic_flag is_terminating = ATOMIC_FLAG_INIT;
  
-@@ -71,15 +77,26 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t
+@@ -71,15 +84,26 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t
      };
  }
  
@@ -52,7 +60,37 @@ diff --git a/tools/server/server.cpp b/tools/server/server.cpp
      common_init();
  
      if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
-@@ -332,6 +349,13 @@ int llama_server(int argc, char ** argv) {
+@@ -239,13 +263,28 @@ int llama_server(int argc, char ** argv) {
+         ctx_http.post("/cors-proxy",      ex_wrapper(proxy_handler_post));
+     }
+     // EXPERIMENTAL built-in tools
+-    if (!params.server_tools.empty()) {
++    bool enable_tools = !params.server_tools.empty();
++#ifdef LLAMAFILE_TUI
++    // llamafile: also stand up /tools if external MCP servers are configured
++    // (--mcp), even when no built-in tools (--tools) were requested.
++    enable_tools = enable_tools || llamafile_mcp_server_count() > 0;
++#endif
++    if (enable_tools) {
+         try {
+             tools.setup(params.server_tools);
+         } catch (const std::exception & e) {
+             SRV_ERR("tools setup failed: %s\n", e.what());
+             return 1;
+         }
++#ifdef LLAMAFILE_TUI
++        // llamafile MCP HOST: spawn each --mcp server, discover its tools, and
++        // register them into the /tools registry so the web UI agentic loop and
++        // the model can call them. A failed server is skipped, not fatal.
++        int n_mcp = llamafile_mcp_register_tools(tools);
++        if (n_mcp > 0) {
++            SRV_INF("mcp-host: bridged %d external MCP tool(s) into /tools\n", n_mcp);
++        }
++#endif
+         SRV_WRN("%s", "-----------------\n");
+         SRV_WRN("%s", "Built-in tools are enabled, do not expose server to untrusted environments\n");
+         SRV_WRN("%s", "This feature is EXPERIMENTAL and may be changed in the future\n");
+@@ -332,6 +371,13 @@ int llama_server(int argc, char ** argv) {
              // this will unblock start_loop()
              ctx_server.terminate();
          };
@@ -66,7 +104,7 @@ diff --git a/tools/server/server.cpp b/tools/server/server.cpp
      }
  
      // TODO: refactor in common/console
-@@ -368,6 +392,11 @@ int llama_server(int argc, char ** argv) {
+@@ -368,6 +414,11 @@ int llama_server(int argc, char ** argv) {
      } else {
          SRV_INF("server is listening on %s\n", ctx_http.listening_address.c_str());
  
@@ -78,7 +116,7 @@ diff --git a/tools/server/server.cpp b/tools/server/server.cpp
          // optionally, notify router server that this instance is ready
          std::thread monitor_thread;
          if (child.is_child()) {
-@@ -392,5 +421,48 @@ int llama_server(int argc, char ** argv) {
+@@ -392,5 +443,48 @@ int llama_server(int argc, char ** argv) {
          }
      }
  

@@ -18,8 +18,10 @@
 
 #include "args.h"
 #include "llamafile.h"
+#include "mcp_host.h"
 
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace lf {
@@ -88,6 +90,17 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
 
     for (int i = 0; i < argc; ++i) {
         const char* arg = argv[i];
+
+        // --mcp '<command line>': configure an external MCP server to spawn and
+        // bridge into the /tools registry (llamafile is the MCP HOST). Repeatable.
+        // Consume the flag + its value so they never reach llama.cpp's parser.
+        if (strcmp(arg, "--mcp") == 0) {
+            if (i + 1 < argc) {
+                llamafile_mcp_add_server(argv[i + 1]);
+                ++i;
+            }
+            continue;
+        }
 
         // Skip llamafile-specific flags
         if (is_llamafile_flag(arg)) {

@@ -149,6 +149,7 @@ LLAMAFILE_SRCS_CPP := \
 	llamafile/image.cpp \
 	llamafile/iqk_quantize_k.cpp \
 	llamafile/llama.cpp \
+	llamafile/mcp_host.cpp \
 	llamafile/mcp_server.cpp \
 	llamafile/string.cpp \
 	llamafile/wiki_cli.cpp \
@@ -306,6 +307,13 @@ LLAMAFILE_SERVER_INCS := \
 o/$(MODE)/llamafile/server.cpp.o: llama.cpp/tools/server/server.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(LLAMAFILE_CPPFLAGS) $(LLAMAFILE_SERVER_INCS) -DLLAMA_BUILD_WEBUI -c -o $@ $<
+
+# mcp_host.cpp is the MCP HOST: it derives bridged tools from server_tool and
+# registers them into the server's /tools registry, so it needs the server
+# include path (server-tools.h) like server.cpp does.
+o/$(MODE)/llamafile/mcp_host.o: llamafile/mcp_host.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(LLAMAFILE_CPPFLAGS) $(LLAMAFILE_SERVER_INCS) -c -o $@ $<
 
 # ==============================================================================
 # Main executable
