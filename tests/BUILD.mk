@@ -86,6 +86,7 @@ FA_HELPERS_TEST_DEPS := \
 	o/$(MODE)/llamafile/iqk_mul_mat_amd_avx2.o \
 	o/$(MODE)/llamafile/iqk_mul_mat_amd_zen4.o \
 	o/$(MODE)/llamafile/iqk_mul_mat_arm82.o \
+	o/$(MODE)/llamafile/iqk_quantize_k.o \
 	o/$(MODE)/llama.cpp/llama.cpp.a
 
 o/$(MODE)/tests/fa_helpers_test.o: tests/fa_helpers_test.cpp
@@ -121,6 +122,69 @@ o/$(MODE)/tests/gpu_backend_test: \
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # ==============================================================================
+# Test: zim_reader_test (llamafile/zim ZIM reader, against tiny committed ZIMs)
+# ==============================================================================
+#
+# Opens the two committed fixture archives (tests/fixtures/small_nons.zim v6 and
+# small_withns.zim v5) and exercises open/metadata/get-by-path/title-search/
+# redirect-resolution and the streaming-zstd cluster path. The fixture path
+# defaults to "tests/fixtures" (correct when run from the repo root by make).
+
+ZIM_READER_TEST_DEPS := \
+	o/$(MODE)/llamafile/zim/zim.a
+
+o/$(MODE)/tests/zim_reader_test.o: tests/zim_reader_test.c
+	@mkdir -p $(@D)
+	$(CC) $(CCFLAGS) $(CPPFLAGS) $(TESTS_CPPFLAGS) -iquote llamafile/zim -c -o $@ $<
+
+o/$(MODE)/tests/zim_reader_test: \
+		o/$(MODE)/tests/zim_reader_test.o \
+		$(ZIM_READER_TEST_DEPS)
+	@mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+# ==============================================================================
+# Test: wikidata_test (llamafile/wikidata reader; self-built SQLite+FTS5 fixture)
+# ==============================================================================
+#
+# Builds a tiny in-process SQLite+FTS5 store with the vendored sqlite, then
+# drives the wikidata reader over it (FTS5 search incl. OR'd boolean query,
+# entity fetch, claim decode, and unit/entity P->Q resolution). No fixture is
+# committed — it is created in a temp file and unlinked. Links the production
+# wikidata.o plus the vendored sqlite3.o.
+
+WIKIDATA_TEST_DEPS := \
+	o/$(MODE)/llamafile/wikidata.o \
+	o/$(MODE)/third_party/sqlite/sqlite3.o
+
+o/$(MODE)/tests/wikidata_test.o: tests/wikidata_test.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(TESTS_CPPFLAGS) -c -o $@ $<
+
+o/$(MODE)/tests/wikidata_test: \
+		o/$(MODE)/tests/wikidata_test.o \
+		$(WIKIDATA_TEST_DEPS)
+	@mkdir -p $(@D)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+# ==============================================================================
+# Test: path_jail_test (llamafile/path_jail.h — server-tools jail canonicalizer)
+# ==============================================================================
+#
+# Header-only: exercises lf::jail_resolve (the llamafile-owned extraction of the
+# server-tools `jail_resolve` security check) over a temp tree with an escaping
+# symlink. No external deps.
+
+o/$(MODE)/tests/path_jail_test.o: tests/path_jail_test.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(TESTS_CPPFLAGS) -c -o $@ $<
+
+o/$(MODE)/tests/path_jail_test: \
+		o/$(MODE)/tests/path_jail_test.o
+	@mkdir -p $(@D)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+# ==============================================================================
 # Phony targets
 # ==============================================================================
 
@@ -128,4 +192,7 @@ o/$(MODE)/tests/gpu_backend_test: \
 o/$(MODE)/tests: \
 	o/$(MODE)/tests/extract_data_uris_test.runs \
 	o/$(MODE)/tests/fa_helpers_test.runs \
-	o/$(MODE)/tests/gpu_backend_test.runs
+	o/$(MODE)/tests/gpu_backend_test.runs \
+	o/$(MODE)/tests/zim_reader_test.runs \
+	o/$(MODE)/tests/wikidata_test.runs \
+	o/$(MODE)/tests/path_jail_test.runs
