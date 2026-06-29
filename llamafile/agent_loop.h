@@ -42,6 +42,7 @@
 // client-side so every client benefits.
 
 struct server_tools;  // llama.cpp/tools/server/server-tools.h
+namespace agentrt { struct EventBroker; }  // agent_runtime.h (SSE broker)
 
 // Configure the loopback endpoint the sub-agent loop POSTs to. Called from the
 // server once the bind address is known (server.cpp). `api_key` may be empty;
@@ -70,8 +71,21 @@ int llamafile_agents_register_tools(server_tools & registry);
 // turn) to /tools, and loops with a hard `max_turns` cap. `depth` guards
 // against unbounded recursion. Returns the final assistant text (the distilled
 // result), or a "(stopped: ...)" marker on a cap/error.
-std::string llamafile_run_agent(const std::string & system_prompt,
+//
+// `role` is a short label (researcher/ideator/verifier) used to TAG the LIVE
+// activity events streamed over the delegate-activity broker (see below) so the
+// /agents UI can attribute each step to its sub-agent. Pass "" for an untagged
+// run.
+std::string llamafile_run_agent(const std::string & role,
+                                const std::string & system_prompt,
                                 const std::string & user_task,
                                 const std::vector<std::string> & tool_allowlist,
                                 int max_turns,
                                 int depth);
+
+// LIVE delegate-activity SSE broker. Every `delegate_to_*` invocation streams
+// structured JSON events here as it runs (start / turn / tool_call / tool_result
+// / final / maxturns / error), so the /agents UI can WATCH a synchronous
+// sub-agent work in real time. Returns a process-global broker (never null);
+// the /agents/activity SSE endpoint tails it. See agent_loop.cpp.
+agentrt::EventBroker * llamafile_agents_activity_broker();

@@ -26,7 +26,7 @@
  :root{color-scheme:dark;font-family:ui-sans-serif,system-ui,sans-serif}
  *{box-sizing:border-box}
  body{margin:0;background:#0b0d10;color:#e6e8eb;display:grid;
-      grid-template-columns:340px 1fr;gap:0;height:100vh;overflow:hidden}
+      grid-template-columns:300px 1fr 380px;gap:0;height:100vh;overflow:hidden}
  h1{font:600 14px ui-sans-serif;margin:0;padding:12px 14px;border-bottom:1px solid #1c232b;
     display:flex;align-items:center;gap:8px}
  h1 .dot{width:8px;height:8px;border-radius:50%;background:#7fd1b9}
@@ -108,6 +108,35 @@
  #newForm textarea:focus{outline:none;border-color:#3a7d99}
  #newForm .nf-row{display:flex;gap:6px;justify-content:flex-end}
  #newForm .nf-hint{font:11px ui-sans-serif;color:#5b6672}
+ /* ---- delegate activity (right) — LIVE synchronous delegate_to_* stream ---- */
+ #activity{border-left:1px solid #1c232b;display:flex;flex-direction:column;min-height:0}
+ #activity .hd{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #1c232b}
+ #activity .hd b{font:600 12px ui-sans-serif;color:#9aa4af;text-transform:uppercase;letter-spacing:.05em}
+ #actconn{font:600 10px ui-monospace,monospace;color:#5b6672;margin-left:auto;
+          border:1px solid #1c232b;border-radius:10px;padding:2px 7px;white-space:nowrap}
+ #actconn.live{color:#7fd1b9;border-color:#1f6f54;background:#0f1a16}
+ #actconn.warn{color:#e0c057;border-color:#3a3417;background:#171502}
+ #actlist{overflow:auto;flex:1;padding:8px}
+ .acard{border:1px solid #1c232b;border-left:3px solid var(--ac,#3a7d99);border-radius:0 8px 8px 0;
+        margin-bottom:8px;background:#0e1217;overflow:hidden}
+ .acard .ah2{display:flex;align-items:center;gap:7px;padding:7px 9px;background:#11161c;
+             border-bottom:1px solid #1c232b}
+ .acard .ah2 .role{font:600 12px ui-sans-serif}
+ .acard .ah2 .dep{font:10px ui-monospace,monospace;color:#5b6672}
+ .acard .task{font:11px/1.45 ui-sans-serif;color:#9aa4af;padding:6px 9px 2px}
+ .acard .asteps{font:12px/1.5 ui-monospace,monospace;padding:3px 9px 7px}
+ .astep{display:flex;gap:6px;padding:1px 0;align-items:baseline}
+ .astep .ic{flex:none;width:1.3em;text-align:center}
+ .astep .tx{min-width:0;overflow-wrap:anywhere}
+ .astep.tool_call .tx{color:#7fd1b9}.astep.tool_result .tx{color:#6f9c8d}
+ .astep.turn .tx{color:#5b6672}.astep.err .tx{color:#e06b6b}
+ .astep .k{color:#7e8a96}.astep .rp{color:#6f9c8d}
+ .acard .afinal{margin:2px 9px 9px;padding:7px 9px;border:1px solid #2c9472;border-radius:6px;
+                background:#0f1a16;white-space:pre-wrap;font:12px/1.5 ui-sans-serif;color:#cdeede}
+ .acard .stat2{margin-left:auto;font:600 10px ui-sans-serif;text-transform:uppercase;
+               padding:1px 6px;border-radius:8px;background:#143b2b;color:#7fd1b9}
+ .acard .stat2.done{background:#1f2a36;color:#8fb0d6}
+ .acard .stat2.error,.acard .stat2.maxturns{background:#3a1c1c;color:#e06b6b}
 </style></head><body>
 
 <div id="side">
@@ -137,6 +166,11 @@
   </div>
   <div id="final"></div>
   <div id="lanes"><div class="empty">Pick a session on the left, or create one with “+ New”.</div></div>
+</div>
+
+<div id="activity">
+  <div class="hd"><b>🔍 Delegate activity</b><span id="actconn">○ connecting…</span></div>
+  <div id="actlist"><div class="empty">No delegate runs yet.<br>Call a <code>delegate_to_*</code> tool to watch it work live.</div></div>
 </div>
 
 <script>
@@ -448,8 +482,103 @@ if (window.parent && window.parent !== window) {
   }
 }
 
+// ---- LIVE delegate activity (right panel) ----------------------------------
+// Streams the synchronous delegate_to_* sub-agents over GET /agents/activity
+// (SSE). Each run is one card keyed by event.id; steps grow live as the agent
+// searches/reads/thinks; the final answer lands in a box. Indented by depth so
+// nested delegates read as a tree. This is INDEPENDENT of the session selection
+// on the left — it shows whatever delegate tools are firing right now.
+let ACT = new Map();      // id -> {el, steps, list, statEl, pending:[]}
+let ACTES = null;
+
+function setActConn(cls, text){ const c=$("#actconn"); c.className=cls||""; c.textContent=text; }
+
+function ensureActCard(id, role, depth){
+  let c = ACT.get(id);
+  if(c) return c;
+  const host = $("#actlist");
+  const empty = host.querySelector(".empty"); if(empty) empty.remove();
+  const el = document.createElement("div");
+  el.className = "acard";
+  el.style.marginLeft = ((depth||0)*16)+"px";
+  el.style.setProperty("--ac", laneColor(depth||0));
+  el.innerHTML =
+    `<div class="ah2"><span class="role">${esc(role||"agent")}</span>`+
+    `<span class="dep">depth ${depth||0}</span><span class="stat2">running</span></div>`+
+    `<div class="task"></div><div class="asteps"></div>`;
+  host.appendChild(el);
+  c = {el, steps: el.querySelector(".asteps"), task: el.querySelector(".task"),
+       statEl: el.querySelector(".stat2"), pending: []};
+  ACT.set(id, c);
+  return c;
+}
+
+function actStep(c, cls, icon){
+  const row = document.createElement("div");
+  row.className = "astep "+cls;
+  row.innerHTML = `<span class="ic">${icon}</span><span class="tx"></span>`;
+  c.steps.appendChild(row);
+  const host = $("#actlist"); host.scrollTop = host.scrollHeight;
+  return row.querySelector(".tx");
+}
+
+function setActStatus(c, st){ c.statEl.className = "stat2 "+st; c.statEl.textContent = st; }
+
+function renderActivity(e){
+  if(!e || typeof e!=="object" || !e.id) return;
+  const c = ensureActCard(e.id, e.role, e.depth);
+  switch(e.type){
+    case "start":
+      c.task.textContent = e.text || "";
+      setActStatus(c, "running");
+      break;
+    case "turn":
+      // a faint marker so the card visibly advances between tool calls
+      actStep(c, "turn", "▸").innerHTML = `turn ${(+e.turn||0)+1}`;
+      break;
+    case "tool_call": {
+      const tx = actStep(c, "tool_call", "🔍");
+      tx.innerHTML = `<b>${esc(e.tool||"?")}</b>`+
+        (e.arg?` <span class="k">${esc(e.arg)}</span>`:"")+`<span class="res"></span>`;
+      c.pending.push({tool:e.tool, res: tx.querySelector(".res")});
+      break; }
+    case "tool_result": {
+      let p=null;
+      for(let i=0;i<c.pending.length;i++){ if(c.pending[i].tool===e.tool){ p=c.pending.splice(i,1)[0]; break; } }
+      if(!p && c.pending.length) p = c.pending.shift();
+      if(p){ p.res.innerHTML = ` → <span class="rp">${esc(e.preview||"")}</span>`; }
+      else { actStep(c, "tool_result", "↳").innerHTML =
+               `<b>${esc(e.tool||"?")}</b> → <span class="rp">${esc(e.preview||"")}</span>`; }
+      const host=$("#actlist"); host.scrollTop=host.scrollHeight;
+      break; }
+    case "final": {
+      setActStatus(c, "done");
+      const box = document.createElement("div");
+      box.className = "afinal"; box.textContent = e.text || "(no text)";
+      c.el.appendChild(box);
+      break; }
+    case "maxturns":
+      setActStatus(c, "maxturns");
+      actStep(c, "err", "⚠").innerHTML = `stopped at max turns`;
+      break;
+    case "error":
+      setActStatus(c, "error");
+      actStep(c, "err", "✖").innerHTML = `error: ${esc(e.text||"")}`;
+      break;
+  }
+}
+
+function startActivityStream(){
+  setActConn("", "○ connecting…");
+  ACTES = new EventSource("/agents/activity");
+  ACTES.onopen = ()=> setActConn("live", "● live");
+  ACTES.onmessage = m => { let e; try{ e=JSON.parse(m.data); }catch(_){ return; } renderActivity(e); };
+  ACTES.onerror = ()=> setActConn("warn", "○ reconnecting…");
+}
+
 // ---- boot ------------------------------------------------------------------
 refreshSessions();
 setInterval(refreshSessions, 3000);
+startActivityStream();
 </script>
 </body></html>

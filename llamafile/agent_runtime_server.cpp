@@ -32,6 +32,7 @@
 #include "agent_runtime.h"
 #include "agent_session.h"    // Phase 4: SessionManager (persist/pause/resume)
 #include "agent_predicate.h"  // poll_until predicate language
+#include "agent_loop.h"       // delegate-activity broker (LIVE /agents/activity)
 
 #include "server-tools.h"   // server_tool, server_tools
 #include "server-http.h"    // server_http_context, server_http_req/res
@@ -869,6 +870,16 @@ server_http_res_ptr handle_agents_ui(const server_http_req &) {
                        "text/html; charset=utf-8");
 }
 
+// GET /agents/activity (SSE) — LIVE stream of the synchronous delegate_to_*
+// sub-agents' steps (start/turn/tool_call/tool_result/final/maxturns/error),
+// tapped straight off the process-global delegate-activity broker in
+// agent_loop.cpp. Replays the broker log from 0 (so a freshly opened /agents
+// page sees recent runs) then tails live. Registered in the llamafile-owned
+// route hook below, so server.cpp needs no edit.
+server_http_res_ptr handle_agents_activity(const server_http_req &) {
+    return events_stream(llamafile_agents_activity_broker());
+}
+
 server_http_res_ptr serve_trace_file(const std::string & path) {
     FILE * f = fopen(path.c_str(), "rb");
     if (!f) return json_res(404, json{{"error", "no trace yet"}});
@@ -1203,8 +1214,10 @@ void llamafile_runtime_register_routes(server_http_context & http) {
     http.post("/session/:id/stop",     handle_session_stop);
 
     // Phase 5: the embedded web UI (agent lanes/timeline + session manager).
-    http.get ("/agents",     handle_agents_ui);
-    http.get ("/agents/ui",  handle_agents_ui);
+    http.get ("/agents",          handle_agents_ui);
+    http.get ("/agents/ui",       handle_agents_ui);
+    // LIVE delegate-activity stream (synchronous delegate_to_* sub-agents).
+    http.get ("/agents/activity", handle_agents_activity);
 
     // Legacy /runtime/* aliases (back-compat: drive the current session).
     http.post("/runtime/start",  handle_start);

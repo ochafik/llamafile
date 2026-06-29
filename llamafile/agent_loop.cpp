@@ -25,6 +25,7 @@
 
 #include "agent_loop.h"
 
+#include "agent_runtime.h"  // agentrt::EventBroker + now_seconds (LIVE activity SSE)
 #include "server-tools.h"  // server_tool, server_tools (llama.cpp/tools/server)
 
 #include <cpp-httplib/httplib.h>
@@ -66,6 +67,32 @@ int budget() { return (g_n_parallel > 0 ? g_n_parallel : 4) * 4; }
 void log(const std::string & who, const char * kind, const std::string & msg) {
     fprintf(stderr, "agents: %-22s %-9s %s\n", who.c_str(), kind,
             msg.substr(0, 120).c_str());
+}
+
+// ---------------------------------------------------------------------------
+// LIVE delegate-activity broker — a single process-global SSE EventBroker that
+// every delegate_to_* invocation streams its steps into as it runs, so the
+// /agents UI can WATCH a synchronous sub-agent work in real time (it otherwise
+// runs opaque and only returns a final blob). The /agents/activity SSE endpoint
+// (agent_runtime_server.cpp) tails this broker.
+// ---------------------------------------------------------------------------
+agentrt::EventBroker  g_activity;          // never closed; lives for the process
+std::atomic<uint64_t> g_call_seq{0};       // unique id per delegate invocation
+
+// Publish one structured activity event. `extra` carries the type-specific
+// fields (turn/tool/arg/preview/text); id/role/depth/ts are stamped here.
+void emit_activity(const std::string & id, const std::string & role, int depth,
+                   const char * type, json extra = json::object()) {
+    json ev = {
+        {"type",  type},
+        {"id",    id},
+        {"role",  role},
+        {"depth", depth},
+        {"ts",    agentrt::now_seconds()},
+    };
+    if (extra.is_object())
+        for (auto & kv : extra.items()) ev[kv.key()] = kv.value();
+    g_activity.publish(ev.dump());
 }
 
 // The agentic loop runs from inside a tool handler — i.e. on an HTTP worker
@@ -214,7 +241,9 @@ bool llamafile_agents_enabled() { return g_enabled; }
 // ---------------------------------------------------------------------------
 namespace {
 
-std::string run_agent_impl(const std::string & system_prompt,
+std::string run_agent_impl(const std::string & role,
+                           const std::string & call_id,
+                           const std::string & system_prompt,
                            const std::string & user_task,
                            const std::vector<std::string> & tool_allowlist,
                            int max_turns,
@@ -255,7 +284,15 @@ std::string run_agent_impl(const std::string & system_prompt,
         if (steps.empty()) return answer;
         return answer + "\n\n<details><summary>🔎 sub-agent steps</summary>\n\n" + steps + "</details>";
     };
+
+    // LIVE: announce the run (role + task) so the /agents Activity panel opens a
+    // card the moment a delegate_to_* tool fires — before any token is decoded.
+    emit_activity(call_id, role, depth, "start", json{{"text", preview(user_task, 140)}});
+
     for (int turn = 0; turn < max_turns; ++turn) {
+        // LIVE: a new turn begins (the sub-agent is about to call the model).
+        emit_activity(call_id, role, depth, "turn", json{{"turn", turn}});
+
         // Escalating turn-budget reminder so the agent wraps up instead of getting
         // cut off mid-research. (remaining counts this turn.)
         int remaining = max_turns - turn;
@@ -270,6 +307,8 @@ std::string run_agent_impl(const std::string & system_prompt,
         json msg = post_chat(messages, tools);
         if (msg.contains("__error")) {
             log(who, "error", msg["__error"].get<std::string>());
+            emit_activity(call_id, role, depth, "error",
+                          json{{"text", msg["__error"].get<std::string>()}});
             return "(stopped: " + msg["__error"].get<std::string>() + ")";
         }
 
@@ -282,6 +321,7 @@ std::string run_agent_impl(const std::string & system_prompt,
 
         if (tool_calls.empty()) {
             log(who, "final", content);
+            emit_activity(call_id, role, depth, "final", json{{"text", content}});
             return finalize(content);
         }
         last_text = content;
@@ -311,6 +351,15 @@ std::string run_agent_impl(const std::string & system_prompt,
             std::string raw   = call.value("function", json::object()).value("arguments", "");
             json args = json::parse(raw.empty() ? "{}" : raw, nullptr, false);
             if (args.is_discarded()) args = json::object();
+            // LIVE: stream the tool call (name + first string-arg preview) the
+            // instant the sub-agent decides to call it — BEFORE it runs.
+            std::string aprev;
+            if (args.is_object())
+                for (auto & kv : args.items())
+                    if (kv.value().is_string()) { aprev = kv.value().get<std::string>(); break; }
+            emit_activity(call_id, role, depth, "tool_call",
+                          json{{"turn", turn}, {"tool", tname},
+                               {"arg", preview(aprev, 60)}});
             jobs[i].fn = [i, tname, args, &results]() {
                 results[i] = post_tool(tname, args);
             };
@@ -343,17 +392,25 @@ std::string run_agent_impl(const std::string & system_prompt,
                     if (kv.value().is_string()) { ap = kv.value().get<std::string>(); break; }
             steps += "- **" + tn + "**" + (ap.empty() ? "" : " `" + preview(ap, 60) + "`") +
                      " → " + preview(results[i], 140) + "\n";
+            // LIVE: stream the tool result preview as soon as it lands.
+            emit_activity(call_id, role, depth, "tool_result",
+                          json{{"turn", turn}, {"tool", tn},
+                               {"arg", preview(ap, 60)},
+                               {"preview", preview(results[i], 140)}});
         }
     }
 
     log(who, "maxturns", "hit turn cap");
+    emit_activity(call_id, role, depth, "maxturns",
+                  json{{"text", preview(last_text, 140)}});
     return finalize(last_text.empty() ? "(stopped: max turns reached)"
                                       : last_text + "\n\n(note: stopped at max turns)");
 }
 
 }  // namespace
 
-std::string llamafile_run_agent(const std::string & system_prompt,
+std::string llamafile_run_agent(const std::string & role,
+                                const std::string & system_prompt,
                                 const std::string & user_task,
                                 const std::vector<std::string> & tool_allowlist,
                                 int max_turns,
@@ -367,13 +424,23 @@ std::string llamafile_run_agent(const std::string & system_prompt,
     }
     struct Guard { ~Guard() { g_inflight.fetch_sub(1); } } guard;
 
+    // A unique id per invocation so the /agents Activity panel can group every
+    // event of THIS sub-agent run into one card (and indent nested delegates).
+    std::string call_id = (role.empty() ? std::string("agent") : role) + "-" +
+                          std::to_string(g_call_seq.fetch_add(1) + 1);
+
     // Run the whole loop on a fresh 8 MiB-stack pthread: the caller is an HTTP
     // worker thread whose stack would overflow on httplib + nlohmann/json.
     std::string out;
     run_joined_big_stack([&]() {
-        out = run_agent_impl(system_prompt, user_task, tool_allowlist, max_turns, depth);
+        out = run_agent_impl(role, call_id, system_prompt, user_task,
+                             tool_allowlist, max_turns, depth);
     });
     return out;
+}
+
+agentrt::EventBroker * llamafile_agents_activity_broker() {
+    return &g_activity;
 }
 
 // ---------------------------------------------------------------------------
@@ -480,7 +547,8 @@ struct DelegateTool : server_tool {
             return {{"error", "missing '" + spec.arg + "' argument"}};
         }
         std::string result =
-            llamafile_run_agent(spec.system, task, spec.allow, spec.max_turns, /*depth=*/1);
+            llamafile_run_agent(spec.role, spec.system, task, spec.allow,
+                                spec.max_turns, /*depth=*/1);
         return {{"plain_text_response", result}};
     }
 };
