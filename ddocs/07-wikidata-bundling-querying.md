@@ -266,6 +266,34 @@ For **UC2** the technology winner (embedded C++ Cypher = Kùzu-class) is real bu
 adopt the **Graphiti *pattern* over an embeddable store**, prototype a **Kùzu-fork-under-cosmocc**
 before betting on it, SQLite-graph as the safe fallback.
 
+### 3e. HDT forks / successors — who's carrying it forward (EVIDENCE, "cool but old")
+
+The user is right: **`rdfhdt/hdt-cpp` is dormant** ("the public version of hdt-cpp is poorly
+maintained"). HDT itself is a **W3C Member Submission (2011), never a full Recommendation** —
+the *format* is stable/frozen, which is partly *why* the C++ lib is quiet. State of the
+ecosystem:
+
+| Project | Lang | Last activity (EVIDENCE) | Caps | Notes |
+|---|---|---|---|---|
+| **`rdfhdt/hdt-cpp`** (canonical) | C++ | dormant; `develop` is the least-stale branch | load + **create** + triple-pattern | The original. C++11-era; needs patching against modern libstdc++/serd. |
+| **SWI-Prolog HDT pack fork** (Peter Ludemann) | C++ | active community fixes (modern C++/libs) | as hdt-cpp | **Best-maintained C++ lineage** — explicitly modernizes hdt-cpp for current compilers (SWI-Prolog `pack/hdt`). The realistic base if we want C++ HDT under cosmocc. |
+| **`ptorrestr/hdt-cpp`** | C++ | secondary fork | as hdt-cpp | Alternative fork; less prominent. |
+| **`hdt` Rust crate (hdt-rs)** (K. Höffner et al.) | **Rust** | **active into 2026** (lib.rs); JOSS 2023 | **load + triple-pattern only (no create)** | Most *actively maintained* HDT impl overall — but **Rust → does not target cosmopolitan**, same blocker as Oxigraph. Reads hdt-cpp files. |
+| **`hdt-java`** (rdfhdt) | **JVM** | updated **Mar 2025** | load + create + Jena SPARQL | Only HDT lineage with a real SPARQL layer; **JVM → rejected for APE**. |
+| **qEndpoint** (the-qa-company) | **JVM** (HDT read + RDF4J write) | active | **full SPARQL**, all Wikidata (~17 B triples) on **600 GB SSD / 10 GB RAM** | Not embeddable (JVM), but a strong **external Wikidata-SPARQL bridge** alternative to QLever — *much lighter to stand up* (HDT-backed, commodity hardware). Powers the EU Knowledge Graph / QAnswer. |
+
+(Sources: [hdt-cpp](https://github.com/rdfhdt/hdt-cpp) + [SWI-Prolog hdt pack](https://www.swi-prolog.org/pack/file_details/hdt/README.md);
+[ptorrestr/hdt-cpp](https://github.com/ptorrestr/hdt-cpp);
+[hdt Rust crate](https://docs.rs/hdt/latest/hdt/) + [JOSS hdt-rs](https://joss.theoj.org/papers/10.21105/joss.05114);
+[qEndpoint](https://github.com/the-qa-company/qEndpoint).)
+
+**Best-maintained by lane:** *most active overall* = **Rust `hdt` crate** (but not cosmocc-able);
+*best C/C++ lineage* = **SWI-Prolog's modernized hdt-cpp fork** (the only realistic in-APE HDT
+base); *easiest external full-SPARQL-over-HDT* = **qEndpoint** (JVM, commodity hardware).
+**Takeaway:** there is **no actively-maintained, cosmocc-friendly C HDT lib** — the C++ lineage
+lives only via the SWI-Prolog modernization, and the *vibrant* HDT work has moved to Rust/JVM,
+both APE-disqualified. This *reinforces* the §7 call: HDT is "maybe later" for UC1, not a v1 dep.
+
 ---
 
 ## 4. Bundling strategy
@@ -411,3 +439,167 @@ deemed infeasible (it is, today), the pragmatic fallback is exactly this design:
 - Best-rank extraction: re-parse from JSON (rank is in the source) vs recover from the
   existing DuckDB (rank was dropped → likely needs a JSON re-pass for the lite/full-en tiers).
 - Pick the curated top-N selector (sitelink count / pageviews) and N for the embeddable bundle.
+
+---
+
+## 9. Hands-on bake-off plan (engine spikes)
+
+**Should we run a bake-off now? Mostly NO for UC1, YES (one narrow spike) for the open question.**
+The UC1 winner (SQLite) needs no bake-off — it's already vendored and proven in the APE; the
+only UC1 measurement worth taking is the **ETL/store spike** (build the SQLite entity store,
+measure size + latency). The *engine* bake-off only matters for the genuinely-open question:
+**is there ANY richer-query engine (HDT triple-pattern, or Kùzu Cypher for UC2) that actually
+compiles under cosmocc?** That is one make-or-break gate; run it **narrow, now**, because the
+answer reshapes the roadmap (in-APE graph queries vs MCP-only).
+
+**The REAL filter is cosmocc/APE buildability, ranked first.** A faster engine that won't link
+into the portable binary is worthless here. Shortlist, ranked by buildability:
+
+### Candidate A — SQLite entity store (the UC1 baseline; not really a "candidate", it's the floor)
+- **(a) Build:** trivial — SQLite ships in cosmopolitan. No spike needed.
+- **(b) Load+query:** ETL `wikidata.ddb` → SQLite (`Qid→label/desc/aliases/best-rank claims` +
+  FTS5); run `wikidata_search("Eiffel Tower")` and `wikidata_property(Q243,P2048)`.
+- **(c) Measure:** **store size** (confirm ~8–15 GB full-en / ~0.5–2 GB curated), **cold point
+  lookup**, **FTS search latency** at 82–113 M rows, **embed-via-zipalign** open path.
+- **Decisive measurement:** does the curated tier land **≤2 GB** (embeddable) while answering
+  the fact-tool questions correctly? This is the v1 gate and the **first** thing to run.
+
+### Candidate B — HDT (modernized C++ fork) — *the in-APE triple-pattern probe*
+- **Why it (not Rust hdt-rs):** Rust can't target cosmopolitan, so the only HDT with an APE
+  chance is the **C++ lineage via the SWI-Prolog modernized fork** (§3e).
+- **(a) Build — make-or-break:** *Expect blockers.* hdt-cpp pulls **serd**, **libcds/SDSL-style
+  succinct structures**, pthreads, and C++11 iostream-heavy code. Step 1 = build with **system
+  clang** (baseline). Step 2 = attempt **cosmocc**; record concrete blockers (likely:
+  third-party CMake deps, `mmap`/`MAP_*` flags, `std::filesystem`, serd as a separate lib).
+  **Realistic outcome:** "builds with system clang; cosmocc blockers = serd + libcds vendoring."
+- **(b) Load+query:** convert a **small RDF sample** (e.g. truthy triples for ~10k entities, or
+  the `sample100` slice → N-Triples) to `.hdt` with `rdf2hdt`; run triple-pattern queries
+  `(Q243, P2048, ?)` and `(?, P2048, ?)` via `hdtSearch`/libhdt.
+- **(c) Measure:** **.hdt size** vs the SQLite equivalent on the same sample; **load (mmap) time**;
+  **triple-pattern latency**.
+- **Decisive measurement:** **does libhdt link into a cosmocc APE at all?** If no (after a
+  bounded ~1-day effort), HDT is permanently external/MCP-only and we stop. Size/latency are
+  secondary to that yes/no.
+
+### Candidate C — Kùzu fork (Vela/bighorn) — *the UC2 embedded-graph probe*
+- **(a) Build — make-or-break:** Kùzu is **embedded C++** (the right shape) but a **large CMake
+  project** (Antlr4 Cypher grammar, Arrow, re2, etc.). Step 1 = system-clang build of the
+  **Vela** fork (claims active, MIT, multi-writer). Step 2 = cosmocc attempt; **expect heavy
+  blockers** (Antlr4 runtime, Arrow). Record them. Realistic outcome: "system-clang OK; cosmocc
+  = Antlr4/Arrow port needed → large."
+- **(b) Load+query:** `COPY FROM` a small node/edge CSV (a few k Wikidata entities + claims as
+  edges); run a **Cypher** 1–2 hop traversal (`MATCH (a)-[:P2048]->(v) RETURN v`).
+- **(c) Measure:** **on-disk DB size**, load time, Cypher traversal latency; **binary-size delta**
+  of linking Kùzu into the APE.
+- **Decisive measurement:** cosmocc-buildability **and** APE binary-size cost. Given upstream is
+  abandoned, **only run this if/when UC2 (agent memory) is actually scheduled** — not for UC1.
+
+### Explicitly NOT in the bake-off
+- **Oxigraph, Rust `hdt`, TerminusDB, GraphLite** — Rust, can't target cosmopolitan; test only
+  as **external bridges** if/when needed, never as in-APE candidates.
+- **QLever, qEndpoint, Neo4j, Memgraph, hdt-java** — JVM/heavy-server; **external MCP bridge**
+  evaluation only (a separate, ops-flavored test: stand up the server, point the MCP host at it,
+  confirm `wikidata_sparql` round-trips), not a compile bake-off.
+
+### Recommendation on timing + sequencing
+1. **Now:** run **Candidate A** (SQLite ETL/store spike) — it's the v1 path and gates the bundle
+   size. Highest value, near-zero risk.
+2. **Now, in parallel, time-boxed ~1 day:** run **Candidate B step (a) only** — the *single
+   decisive cosmocc-build probe* for libhdt. Cheap, and its yes/no decides whether in-APE
+   triple-pattern is ever on the table. Don't bother with B's size/latency until it builds.
+3. **Defer Candidate C** until UC2 is scheduled; then lead with its cosmocc-build probe too.
+4. **Defer all external-bridge (QLever/qEndpoint/Oxigraph) tests** until a user actually needs
+   SPARQL; qEndpoint is the lightest to stand up if so.
+
+**The one decisive measurement across the whole bake-off:** *does a non-SQLite engine link into
+a cosmocc APE within a bounded effort?* If **no** (the likely outcome for B and C), the design
+collapses cleanly to **SQLite in-binary + SPARQL/graph out-of-process via MCP** — which is
+already the §0/§7 recommendation. The bake-off exists to *falsify* that fallback, not to pick a
+winner; if B surprises us and libhdt builds, an in-APE truthy-HDT triple-pattern tier becomes a
+real UC1 option.
+
+---
+
+## Storage scale bench (measured)
+
+**Date:** 2026-06-29 · **Host:** M2-class Mac, 103 GB RAM · **Data (read-only):**
+`/Volumes/AI Models at Home/wikidata/wikidata.ddb` (30.6 GB DuckDB) · scripts/artifacts in
+session scratchpad. All numbers are **warm** (the steady-state we care about; the 9.9 GB candidate
+fits entirely in 103 GB RAM, so warm == realistic). `purge` needs sudo → cold not measured;
+cold is bounded by B-tree depth × random-read latency (analysis below).
+
+### Ground truth on the data
+- **112,983,982 entities** (`SELECT count(*)`), confirmed schema:
+  `wikidata(type VARCHAR, id VARCHAR, label VARCHAR, description VARCHAR, aliases VARCHAR[], claims VARCHAR[][][])`.
+- There **is** an index: `CREATE INDEX wikidata_id ON wikidata(id)` (DuckDB ART). No index on `label`.
+- **Average serialized entity = 516 B** (random 100k sample): id 9.1 · label 43.8 · description 29.2 ·
+  aliases 4.5 · **claims (JSON) 429.5** (max 131 KB). Claims are ~83% of content.
+
+### 1. Why DuckDB "didn't scale" — it's the *label search*, not point lookups
+| Query | Indexed? | Warm latency | CPU |
+|---|---|---|---|
+| `WHERE id='Q243'` (id+label) | yes (ART) | **0.5–3 ms** | trivial |
+| Full entity incl. `claims` `WHERE id='Q90'` | yes | **1–12 ms** | trivial |
+| `WHERE label='Eiffel Tower'` (exact) | **no** | **0.77–0.90 s** | ~5 CPU-s |
+| `WHERE label LIKE 'Eiffel%'` (prefix) | **no** | **0.77–1.31 s** | ~5 CPU-s |
+
+**Verdict on the hypothesis:** *refined.* DuckDB point lookups are actually **fine** here because an
+ART index on `id` already exists — the "columnar is bad at point lookups" worry does **not** bite for
+`id` fetch. What doesn't scale is **label/text search**: with no secondary index it is a **full
+table scan of a 30 GB column (~0.8–1.3 s, ~5 CPU-seconds) per search**. That is the real wall for an
+interactive lookup tool, and DuckDB has no FTS. (The user's other DuckDB pain — VSS/extension bugs,
+cf. `bug_vss.sql` in `~/github/ai/graphs/` — is a separate axis but corroborates "didn't scale well".)
+
+### 2. SQLite + FTS5 candidate (measured on a 15 M-row subset)
+Built from the existing `.ddb` (in-memory DuckDB, `ATTACH … READ_ONLY` source + `ATTACH … TYPE SQLITE`
+sink → staging table → `CREATE TABLE entity(id TEXT PRIMARY KEY, label, description, aliases, claims)`
++ `CREATE VIRTUAL TABLE fts USING fts5(label, aliases, content='')`). Subset = **first 15,000,000
+rows = 13.3 % of 113 M**; the head holds the lowest Q-numbers (densest claims) → a **conservative**
+(over-)estimate of size.
+
+| Metric | Measured (15 M) |
+|---|---|
+| Build time | ~3 min wall (export ~37 s · insert+PK 31 s · FTS5 populate 52 s · VACUUM 53 s) |
+| File size (VACUUMed) | **9.92 GB** = entity 8.98 + PK index 0.30 + FTS5 0.57 |
+| **Point lookup** (full entity incl. claims) | **0.020 ms/lookup** warm (2000 random ids in 39.6 ms) |
+| **FTS5 label search** (token MATCH + join → Qids) | **0.102 ms/search** warm (382 searches in 38.9 ms) |
+
+Both are SQLite B-tree / FTS lookups = **O(log n)** → effectively flat with scale (verified: latency
+is process-startup-bound, not row-count-bound).
+
+### Extrapolation to 113 M
+- **Size:** random-average row cost ≈ entity ~546 B (516 content + ~30 SQLite cell overhead) + PK ~20 B
+  + FTS5 ~38 B ≈ **~604 B/row × 113 M ≈ ~68 GB** single file. Cross-check from the dense head
+  (9.92 GB × 113/15 × 0.90 content-ratio) ≈ **~67 GB**. Call it **~67–70 GB**, i.e. ~2.2× the 30.6 GB
+  columnar DuckDB (SQLite stores rows uncompressed).
+- **Build:** ~3 min × 7.5 ≈ **~20–30 min** from the existing `.ddb` (separate from the 8 h+ JSON ETL).
+- **Latency:** 15 M→113 M adds ~1 B-tree level → **warm still well under 0.1 ms** for both point and FTS.
+  Cold (uncached) = B-tree depth (~4–5) × one random read each ≈ **<0.5 ms** even fully cold on NVMe.
+
+### 3. Custom packed-mmap store (analytical floor — not built)
+Sorted-`id` offset table + packed claims blobs, mmap'd, binary-search lookup:
+~516 B content × 113 M ≈ **58 GB** + offset index (113 M × ~12 B ≈ 1.4 GB) ≈ **~59 GB**; lookup =
+~27 comparisons over mmap = a few cache lines warm (**<0.01 ms**). So SQLite "costs" only **~15 % size
+and a sub-µs latency premium** over the bespoke floor — **not worth a custom store for v1.**
+
+### 4. cosmocc / llamafile — zero new deps
+SQLite is already vendored: `third_party/sqlite/sqlite3.c` **v3.47.1**, and `third_party/sqlite/BUILD.mk`
+compiles it with **`-DSQLITE_ENABLE_FTS5`** (also RTREE, GEOPOLY, zlib, math). **FTS5 is available in
+the APE today** — the SQLite path adds no new dependency.
+
+### Fidelity caveat (affects size, fixable)
+The existing ETL (`~/github/ai/graphs/wikidata_duckdb.sql`) keeps **all non-deprecated ranks**
+(`IF claim.rank != 'deprecated'` — no best/preferred-rank filtering) and **raw-URI quantity units**
+(full `http://www.wikidata.org/entity/Qnnnnn` strings), English-only, external-ids dropped. Claims are
+83 % of stored bytes, so a **best-rank + unit-id-shortening** ETL pass (plus optional per-row zstd on
+the claims blob) could shrink the 113 M store **~30–50 %** (toward ~35–48 GB) while improving fidelity.
+
+### VERDICT
+**SQLite + FTS5 scales cleanly for the v1 lookup tool at 113 M entities in a single embeddable file.**
+Warm point lookup ~**0.02 ms**, warm FTS5 label search ~**0.1 ms**, both O(log n) and flat with scale;
+one **~67–70 GB** file (reducible to ~35–48 GB with ETL cleanup + claims compression); **zero new deps**
+(FTS5 already compiled into the cosmocc build). A custom mmap store buys only ~15 % size and is **not
+needed** for v1. DuckDB's "didn't scale" was specifically the **un-indexed full-scan label search**
+(point lookups were fine) — exactly the gap FTS5 closes. **Recommendation:** adopt SQLite+FTS5 for the
+v1 store, and **refresh the ETL** (newer dump + best-rank + unit-id fixes, optional claims zstd) when
+building it, primarily to shrink the dominant claims payload.
