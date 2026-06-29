@@ -30,6 +30,7 @@ void llamafile_runtime_set_session_root(const char * dir);
 
 #include <cstring>
 #include <filesystem>
+#include <spawn.h>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -64,6 +65,27 @@ std::string llamafile_tools_root() {
         g_tools_root = ec ? std::string(".") : p.string();
     }
     return g_tools_root;
+}
+
+// ---------------------------------------------------------------------------
+// Browser auto-launch (for the bundled "just run it" experience).
+// `--open-browser` (consumed below) opens the default browser at the server URL
+// once it is ready (see main.cpp on_ready). Cross-platform via cosmo OS
+// detection; spawns detached and never blocks startup.
+// ---------------------------------------------------------------------------
+extern char **environ;
+static bool g_open_browser = false;
+
+bool llamafile_should_open_browser() { return g_open_browser; }
+
+void llamafile_launch_browser(const char *url) {
+    if (!url || !*url) return;
+    const char *mac[] = {"/usr/bin/open", url, nullptr};
+    const char *lin[] = {"xdg-open", url, nullptr};
+    const char *win[] = {"cmd", "/c", "start", "", url, nullptr};
+    const char **argv = IsXnu() ? mac : (IsWindows() ? win : lin);
+    pid_t pid;
+    posix_spawnp(&pid, argv[0], nullptr, nullptr, (char *const *) argv, environ);
 }
 
 namespace lf {
@@ -236,6 +258,13 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
         // here so it never reaches llama.cpp's parser.
         if (strcmp(arg, "--agents") == 0) {
             llamafile_agents_enable();
+            continue;
+        }
+
+        // --open-browser: open the default browser at the server URL once ready
+        // (for a bundled "just run it" llamafile). llamafile-owned; consumed here.
+        if (strcmp(arg, "--open-browser") == 0) {
+            g_open_browser = true;
             continue;
         }
 

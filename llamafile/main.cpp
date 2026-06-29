@@ -114,6 +114,10 @@ extern int mcp_server_main(int argc, char **argv);
 // `llamafile wikidata ...` CLI (offline Wikidata fact store); see wikidata_cli.cpp.
 extern int wikidata_cli_main(int argc, char **argv);
 
+// Browser auto-launch for a bundled "just run it" llamafile (--open-browser); see args.cpp.
+bool llamafile_should_open_browser();
+void llamafile_launch_browser(const char *url);
+
 // `llamafile mtmd-video-cli ...` — browser-free continuous-video VLM session
 // harness (folder of JPEGs -> per-frame tool calls); see mtmd_video_cli.cpp.
 extern int mtmd_video_cli_main(int argc, char **argv);
@@ -251,6 +255,13 @@ static int combined_main(const LlamafileArgs &args) {
 
     // Called when server is fully loaded and ready to accept requests
     auto on_ready = [&](const std::string &listen_addr) {
+        // Bundled "just run it" mode: open the default browser at the server URL.
+        if (llamafile_should_open_browser()) {
+            std::string url = listen_addr;
+            if (url.find("://") == std::string::npos) url = "http://" + url;
+            if (!url.empty() && url.back() != '/') url += "/";
+            llamafile_launch_browser(url.c_str());
+        }
         // Start TUI chatbot on background thread as HTTP client
         // Use pthread with explicit 8 MiB stack to avoid stack overflow
         // in nlohmann/json's recursive parser (default Cosmopolitan thread
