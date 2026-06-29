@@ -185,6 +185,38 @@ o/$(MODE)/tests/path_jail_test: \
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # ==============================================================================
+# Test: agent_runtime_test (interactive multi-agent runtime core)
+# ==============================================================================
+#
+# Exercises the Router/mailbox/Scheduler/guard machinery in agent_runtime.cpp
+# with a fake (no-model) TurnFn: delivery by id+name, mailbox FIFO + thread
+# safety, runs-on-input / park-on-await / resume-on-message, and the spawn-depth
+# / live-agent / message-rate runaway guards. Links the core object only.
+
+o/$(MODE)/tests/agent_runtime_test.o: tests/agent_runtime_test.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(TESTS_CPPFLAGS) -c -o $@ $<
+
+o/$(MODE)/tests/agent_runtime_test: \
+		o/$(MODE)/tests/agent_runtime_test.o \
+		o/$(MODE)/llamafile/agent_runtime.o
+	@mkdir -p $(@D)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+# Scripted mesh run (ddoc-09 9.1 integration gate, no model): drives the real
+# Runtime end-to-end and writes/prints a real trace.jsonl (tree + concurrency +
+# token totals). Links the core object only.
+o/$(MODE)/tests/agent_runtime_mesh_demo.o: tests/agent_runtime_mesh_demo.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(TESTS_CPPFLAGS) -c -o $@ $<
+
+o/$(MODE)/tests/agent_runtime_mesh_demo: \
+		o/$(MODE)/tests/agent_runtime_mesh_demo.o \
+		o/$(MODE)/llamafile/agent_runtime.o
+	@mkdir -p $(@D)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+# ==============================================================================
 # Phony targets
 # ==============================================================================
 
@@ -195,4 +227,6 @@ o/$(MODE)/tests: \
 	o/$(MODE)/tests/gpu_backend_test.runs \
 	o/$(MODE)/tests/zim_reader_test.runs \
 	o/$(MODE)/tests/wikidata_test.runs \
-	o/$(MODE)/tests/path_jail_test.runs
+	o/$(MODE)/tests/path_jail_test.runs \
+	o/$(MODE)/tests/agent_runtime_test.runs \
+	o/$(MODE)/tests/agent_runtime_mesh_demo.runs

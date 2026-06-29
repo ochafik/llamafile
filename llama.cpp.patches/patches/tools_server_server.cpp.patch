@@ -1,4 +1,5 @@
 diff --git a/llama.cpp/tools/server/server.cpp b/llama.cpp/tools/server/server.cpp
+index bf3680b9f..fa7eba929 100644
 --- a/llama.cpp/tools/server/server.cpp
 +++ b/llama.cpp/tools/server/server.cpp
 @@ -14,6 +14,7 @@
@@ -9,7 +10,7 @@ diff --git a/llama.cpp/tools/server/server.cpp b/llama.cpp/tools/server/server.c
  #include <signal.h>
  #include <thread> // for std::thread::hardware_concurrency
  
-@@ -21,6 +22,31 @@
+@@ -21,6 +22,39 @@
  #include <windows.h>
  #endif
  
@@ -36,12 +37,20 @@ diff --git a/llama.cpp/tools/server/server.cpp b/llama.cpp/tools/server/server.c
 +void llamafile_webcam_register_routes(server_http_context & http,
 +                                      const common_params & params,
 +                                      std::function<llama_context *()> get_server_ctx);
++// llamafile INTERACTIVE MULTI-AGENT RUNTIME (Phase 1): mailboxed, scheduled
++// agents with spawn_agent/send_message/await/list_agents tools and /runtime/*
++// HTTP+SSE endpoints. (defined in llamafile/agent_runtime_server.cpp)
++void llamafile_runtime_configure(const std::string & host, int port,
++                                 const std::string & api_key,
++                                 const std::string & model, int n_parallel);
++int  llamafile_runtime_register_tools(server_tools & registry);
++void llamafile_runtime_register_routes(server_http_context & http);
 +#endif
 +
  static std::function<void(int)> shutdown_handler;
  static std::atomic_flag is_terminating = ATOMIC_FLAG_INIT;
  
-@@ -71,15 +97,26 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t
+@@ -71,15 +105,26 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t
      };
  }
  
@@ -72,7 +81,7 @@ diff --git a/llama.cpp/tools/server/server.cpp b/llama.cpp/tools/server/server.c
      common_init();
  
      if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
-@@ -239,13 +276,49 @@ int llama_server(int argc, char ** argv) {
+@@ -239,13 +284,60 @@ int llama_server(int argc, char ** argv) {
          ctx_http.post("/cors-proxy",      ex_wrapper(proxy_handler_post));
      }
      // EXPERIMENTAL built-in tools
@@ -118,12 +127,23 @@ diff --git a/llama.cpp/tools/server/server.cpp b/llama.cpp/tools/server/server.c
 +            if (n_agents > 0) {
 +                SRV_INF("agents: registered %d delegate sub-agent tool(s) into /tools\n", n_agents);
 +            }
++            // INTERACTIVE RUNTIME (Phase 1): the mailboxed/scheduled mesh tools.
++            llamafile_runtime_configure(
++                params.hostname, params.port,
++                params.api_keys.empty() ? std::string() : params.api_keys.front(),
++                params.model_alias.empty() ? std::string("default")
++                                           : *params.model_alias.begin(),
++                params.n_parallel);
++            int n_rt = llamafile_runtime_register_tools(tools);
++            if (n_rt > 0) {
++                SRV_INF("agents: registered %d interactive-runtime tool(s) into /tools\n", n_rt);
++            }
 +        }
 +#endif
          SRV_WRN("%s", "-----------------\n");
          SRV_WRN("%s", "Built-in tools are enabled, do not expose server to untrusted environments\n");
          SRV_WRN("%s", "This feature is EXPERIMENTAL and may be changed in the future\n");
-@@ -254,6 +327,19 @@ int llama_server(int argc, char ** argv) {
+@@ -254,6 +346,26 @@ int llama_server(int argc, char ** argv) {
          ctx_http.post("/tools",           ex_wrapper(tools.handle_post));
      }
  
@@ -138,12 +158,19 @@ diff --git a/llama.cpp/tools/server/server.cpp b/llama.cpp/tools/server/server.c
 +            [&ctx_server]() -> llama_context * { return ctx_server.get_llama_context(); });
 +        SRV_INF("%s", "webcam-agent: /agent/{start,frame,events,stop} endpoints registered\n");
 +    }
++
++    // llamafile INTERACTIVE MULTI-AGENT RUNTIME: register /runtime/* endpoints
++    // (start/events/status/trace/stop) when sub-agents are enabled (--agents).
++    if (llamafile_agents_enabled()) {
++        llamafile_runtime_register_routes(ctx_http);
++        SRV_INF("%s", "agents: /runtime/{start,events,status,trace,stop} endpoints registered\n");
++    }
 +#endif
 +
      //
      // Start the server
      //
-@@ -332,6 +418,13 @@ int llama_server(int argc, char ** argv) {
+@@ -332,6 +444,13 @@ int llama_server(int argc, char ** argv) {
              // this will unblock start_loop()
              ctx_server.terminate();
          };
@@ -157,7 +184,7 @@ diff --git a/llama.cpp/tools/server/server.cpp b/llama.cpp/tools/server/server.c
      }
  
      // TODO: refactor in common/console
-@@ -368,6 +461,11 @@ int llama_server(int argc, char ** argv) {
+@@ -368,6 +487,11 @@ int llama_server(int argc, char ** argv) {
      } else {
          SRV_INF("server is listening on %s\n", ctx_http.listening_address.c_str());
  
@@ -169,7 +196,7 @@ diff --git a/llama.cpp/tools/server/server.cpp b/llama.cpp/tools/server/server.c
          // optionally, notify router server that this instance is ready
          std::thread monitor_thread;
          if (child.is_child()) {
-@@ -392,5 +490,48 @@ int llama_server(int argc, char ** argv) {
+@@ -392,5 +516,48 @@ int llama_server(int argc, char ** argv) {
          }
      }
  

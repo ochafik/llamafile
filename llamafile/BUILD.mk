@@ -129,6 +129,8 @@ LLAMAFILE_SRCS_C := \
 
 LLAMAFILE_SRCS_CPP := \
 	llamafile/agent_loop.cpp \
+	llamafile/agent_runtime.cpp \
+	llamafile/agent_runtime_server.cpp \
 	llamafile/args.cpp \
 	llamafile/browser_tool.cpp \
 	llamafile/chatbot_api.cpp \
@@ -345,6 +347,13 @@ o/$(MODE)/llamafile/agent_loop.o: llamafile/agent_loop.cpp
 # server_http_res/server_http_req, so it needs the server include path
 # (server-http.h) like server.cpp / mcp_host.cpp / agent_loop.cpp do.
 o/$(MODE)/llamafile/webcam_agent.o: llamafile/webcam_agent.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(LLAMAFILE_CPPFLAGS) $(LLAMAFILE_SERVER_INCS) -c -o $@ $<
+
+# agent_runtime_server.cpp: the interactive multi-agent runtime's LLM turn loop,
+# runtime tools (server_tool subclasses) and /runtime/* HTTP+SSE endpoints, so it
+# needs the server include path (server-tools.h / server-http.h) like the others.
+o/$(MODE)/llamafile/agent_runtime_server.o: llamafile/agent_runtime_server.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(LLAMAFILE_CPPFLAGS) $(LLAMAFILE_SERVER_INCS) -c -o $@ $<
 
