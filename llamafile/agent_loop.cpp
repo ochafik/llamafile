@@ -223,13 +223,31 @@ std::string run_agent_impl(const std::string & system_prompt,
     json tools = tools_for(tool_allowlist);
 
     json messages = json::array();
-    messages.push_back({{"role", "system"}, {"content", system_prompt}});
+    // Tell the agent its turn budget up front so it can pace itself (and not die
+    // at the cap with no answer). It gets escalating reminders near the end below.
+    std::string sys = system_prompt +
+        "\n\nYou have up to " + std::to_string(max_turns) +
+        " tool-calling turns to finish. Work efficiently: gather what you need, then STOP "
+        "calling tools and write your final answer. You'll be warned as your turns run low — "
+        "always produce your best answer before they run out.";
+    messages.push_back({{"role", "system"}, {"content", sys}});
     messages.push_back({{"role", "user"}, {"content", user_task}});
 
     log(who, "start", user_task);
 
     std::string last_text;
     for (int turn = 0; turn < max_turns; ++turn) {
+        // Escalating turn-budget reminder so the agent wraps up instead of getting
+        // cut off mid-research. (remaining counts this turn.)
+        int remaining = max_turns - turn;
+        if (remaining <= 2) {
+            messages.push_back({{"role", "user"}, {"content",
+                remaining == 1
+                  ? std::string("[turn budget: this is your FINAL turn — do NOT call tools; "
+                                "write your complete final answer now with what you have.]")
+                  : std::string("[turn budget: ") + std::to_string(remaining) +
+                    " turns left — start wrapping up; prefer answering over more tool calls.]"}});
+        }
         json msg = post_chat(messages, tools);
         if (msg.contains("__error")) {
             log(who, "error", msg["__error"].get<std::string>());
