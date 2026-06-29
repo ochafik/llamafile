@@ -269,6 +269,24 @@ class Cdp {
         if (!ws_ || !ws_->is_open()) connect_target();
     }
 
+    // Bring the browser PROCESS up (LAUNCH/ATTACH) without connecting a target,
+    // and return its debug port. Used by the code interpreter to spawn a
+    // dedicated target on the SAME browser process (see code_cdp()).
+    int ensure_browser() {
+        if (!configured_) configure();
+        return port_;
+    }
+
+    // Reuse an already-running browser PROCESS on `port` (do not LAUNCH/ATTACH a
+    // new one); always carve out a fresh dedicated target. `read_timeout_s`
+    // widens the devtools socket read window so long evals don't trip it.
+    void use_existing_port(int port, int read_timeout_s) {
+        port_ = port;
+        configured_ = true;
+        force_new_target_ = true;
+        read_timeout_s_ = read_timeout_s;
+    }
+
     // JSON-RPC request; returns the "result" object. Throws on protocol error.
     json call(const std::string & method, const json & params, int /*timeout*/ = 20) {
         if (!ws_) throw std::runtime_error("browser: no devtools connection");
@@ -369,6 +387,8 @@ class Cdp {
     std::unique_ptr<httplib::ws::WebSocketClient> ws_;
     int id_ = 0;
     std::vector<std::string> events_;
+    bool force_new_target_ = false;  // code target: never reuse an existing tab
+    int read_timeout_s_ = 20;        // devtools socket read window
 
     bool http_json(const char * verb, const std::string & path, json & out) {
         httplib::Client cli("127.0.0.1", port_);
@@ -513,7 +533,7 @@ class Cdp {
     // Pick (ATTACH: reuse existing; LAUNCH: create) one page target and connect.
     void connect_target() {
         std::string id, url, title;
-        if (opts_.attach) {
+        if (opts_.attach && !force_new_target_) {
             json targets;
             if (!http_json("GET", "/json", targets) || !targets.is_array())
                 throw std::runtime_error("browser: failed to enumerate targets");
@@ -551,7 +571,7 @@ class Cdp {
         ws_.reset(new httplib::ws::WebSocketClient(ws_url_));
         if (!ws_->is_valid())
             throw std::runtime_error("browser: invalid devtools WebSocket URL: " + ws_url_);
-        ws_->set_read_timeout(20, 0);
+        ws_->set_read_timeout(read_timeout_s_, 0);
         ws_->set_connection_timeout(5, 0);
         ws_->set_websocket_ping_interval(0); // CDP needs no client heartbeat
         if (!ws_->connect()) {
@@ -601,6 +621,25 @@ Cdp & cdp() {
     if (!g_cdp) g_cdp.reset(new Cdp(g_opts));
     g_cdp->ensure();
     return *g_cdp;
+}
+
+// A dedicated CDP target for the code interpreter (ddoc 09 §4). It reuses the
+// SAME headless browser process as the browser_* tools (so --browser /
+// --browser-attach launch/attach exactly one Chrome) but owns its own about:blank
+// target, isolating code evaluation from whatever page the model is browsing.
+std::unique_ptr<Cdp> g_code_cdp;
+
+Cdp & code_cdp() {
+    if (!g_cdp) g_cdp.reset(new Cdp(g_opts));
+    int port = g_cdp->ensure_browser();  // LAUNCH/ATTACH the shared process
+    if (!g_code_cdp) {
+        g_code_cdp.reset(new Cdp(g_opts));
+        // Widen the socket window past the hardest eval timeout so a long (but
+        // bounded) computation returns instead of tripping the read timeout.
+        g_code_cdp->use_existing_port(port, CODE_HARD_TIMEOUT_MS / 1000 + 15);
+    }
+    g_code_cdp->ensure();  // connect (lazily) the dedicated about:blank target
+    return *g_code_cdp;
 }
 
 // Prepend an untrusted-content framing note (prompt-injection defense, §8/7).
@@ -744,6 +783,90 @@ json tool_list_tabs(const json &) {
     }
 }
 
+// =====================================================================
+// Code interpreter (ddoc 09 §4): headless-CDP JS evaluation
+// =====================================================================
+
+json tool_code_run_js(const json & args) {
+    if (!args.contains("code") || !args["code"].is_string())
+        return text_result("error: missing required string argument 'code'", true);
+    std::string code = args["code"].get<std::string>();
+
+    int timeout_ms = CODE_DEFAULT_TIMEOUT_MS;
+    if (args.contains("timeout_ms") && args["timeout_ms"].is_number_integer())
+        timeout_ms = args["timeout_ms"].get<int>();
+    if (timeout_ms < 100) timeout_ms = 100;
+    if (timeout_ms > CODE_HARD_TIMEOUT_MS) timeout_ms = CODE_HARD_TIMEOUT_MS;
+
+    std::lock_guard<std::mutex> lock(g_mu);
+    try {
+        Cdp & c = code_cdp();
+        std::string wrapper = build_code_eval_wrapper(code, timeout_ms);
+        json r = c.call("Runtime.evaluate",
+                        { { "expression", wrapper },
+                          { "returnByValue", true },
+                          { "awaitPromise", true },
+                          // CDP terminates a synchronous busy-loop after this;
+                          // the in-JS race covers never-resolving promises.
+                          { "timeout", timeout_ms } });
+        // A CDP-level exception (e.g. V8 terminating an infinite loop) lands here
+        // rather than as a captured throw — surface it as an error result.
+        if (r.contains("exceptionDetails")) {
+            const json & ed = r["exceptionDetails"];
+            std::string txt = "javascript exception";
+            if (ed.contains("exception") && ed["exception"].contains("description"))
+                txt = ed["exception"]["description"].get<std::string>();
+            else if (ed.contains("text"))
+                txt = ed["text"].get<std::string>();
+            json val = { { "ok", false }, { "type", "undefined" },
+                         { "result", nullptr }, { "console", "" },
+                         { "error", txt } };
+            return format_code_result(val, CODE_OUTPUT_CAP_CHARS);
+        }
+        json val = (r.contains("result") && r["result"].contains("value"))
+                       ? r["result"]["value"]
+                       : json::object();
+        return format_code_result(val, CODE_OUTPUT_CAP_CHARS);
+    } catch (const std::exception & e) {
+        return text_result(std::string("error: ") + e.what(), true);
+    }
+}
+
+json tool_code_render_html(const json & args) {
+    if (!args.contains("html") || !args["html"].is_string())
+        return text_result("error: missing required string argument 'html'", true);
+    std::string html = args["html"].get<std::string>();
+
+    std::lock_guard<std::mutex> lock(g_mu);
+    try {
+        Cdp & c = code_cdp();
+        // Replace the dedicated target's document with the supplied HTML.
+        std::string set =
+            "(() => { document.open(); document.write(" + json(html).dump() +
+            "); document.close(); return true; })()";
+        c.eval(set);
+        json shot = c.call("Page.captureScreenshot",
+                           { { "format", "png" }, { "captureBeyondViewport", true } });
+        std::string data = shot.value("data", std::string());
+        if (data.empty())
+            return text_result("error: screenshot returned no data", true);
+        // base64 PNG can be large; refuse rather than truncate (truncation would
+        // corrupt the image).
+        if (data.size() > 4u * 1024 * 1024)
+            return text_result("error: rendered image too large (" +
+                                   std::to_string(data.size()) + " base64 bytes)",
+                               true);
+        json r;
+        r["content"] = json::array({ json{ { "type", "image" },
+                                           { "data", data },
+                                           { "mimeType", "image/png" } } });
+        r["isError"] = false;
+        return r;
+    } catch (const std::exception & e) {
+        return text_result(std::string("error: ") + e.what(), true);
+    }
+}
+
 } // namespace
 
 // =====================================================================
@@ -811,6 +934,42 @@ void register_browser_tools(const Options & opts, const AddTool & add) {
         "List the browser's open page targets (tabs) as JSON {id, title, url}.",
         json{ { "type", "object" }, { "properties", json::object() } },
         tool_list_tabs);
+
+    // ----- code interpreter (ddoc 09 §4) -----
+
+    add("code_run_js",
+        "Run server-side JavaScript in a sandboxed headless-browser engine and "
+        "return its value. Accepts a multi-statement snippet; the value of the "
+        "trailing expression is returned (e.g. \"40+2\" -> 42). console.log/"
+        "warn/error output is captured separately, and thrown errors are reported "
+        "(with stack) instead of crashing. Use this to compute, parse/transform "
+        "data, or check arithmetic. Each call is time-limited; there is no "
+        "filesystem access and network access is whatever the browser allows.",
+        json{
+            { "type", "object" },
+            { "properties", json{
+                { "code", json{ { "type", "string" },
+                                { "description", "JavaScript to evaluate. The last expression's value is returned." } } },
+                { "timeout_ms", json{ { "type", "integer" },
+                                      { "description", "Per-eval timeout in ms (default 10000, max 60000)." } } },
+            } },
+            { "required", json::array({ "code" }) },
+        },
+        tool_code_run_js);
+
+    add("code_render_html",
+        "Render an HTML document in the headless browser and return a PNG "
+        "screenshot (base64) — useful for charts/plots/tables. Provide a full or "
+        "partial HTML string; it replaces the page content and is captured.",
+        json{
+            { "type", "object" },
+            { "properties", json{
+                { "html", json{ { "type", "string" },
+                                { "description", "The HTML document/markup to render and screenshot." } } },
+            } },
+            { "required", json::array({ "html" }) },
+        },
+        tool_code_render_html);
 
     // TODO (ddoc 04 §5, deferred): browser_click, browser_type, browser_screenshot,
     // browser_back, browser_wait_for_user, Mozilla Readability.js injection.

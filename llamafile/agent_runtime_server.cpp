@@ -179,7 +179,7 @@ struct Role { std::string system; std::vector<std::string> allow; };
 Role role_for(const std::string & role) {
     static const std::vector<std::string> research_tools =
         {"wiki_search", "wiki_get_article", "wiki_*", "wikidata_*",
-         "browser_*", "web_fetch", "send_message", "list_agents",
+         "browser_*", "web_fetch", "code_run_js", "send_message", "list_agents",
          "wait", "poll_until", "schedule"};
     if (role == "researcher")
         return {"You are a RESEARCHER sub-agent. Use the available tools "
@@ -772,7 +772,7 @@ server_http_res_ptr handle_start(const server_http_req & req) {
         std::string err;
         std::vector<std::string> orch_tools = {"spawn_agent", "send_message", "await", "list_agents",
                                                "wait", "poll_until", "schedule",
-                                               "wiki_*", "wikidata_*"};
+                                               "wiki_*", "wikidata_*", "code_run_js"};
         std::string oid = g_rt->spawn("", "orchestrator", "orchestrator",
                                       orchestrator_prompt(), goal, orch_tools, err);
         if (oid.empty()) { status = 500; out = json{{"error", err}}; return; }

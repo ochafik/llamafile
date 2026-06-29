@@ -238,6 +238,24 @@ o/$(MODE)/tests/agent_runtime_mesh_demo: \
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # ==============================================================================
+# Test: code_run_wrapper_test (Phase 3 headless-CDP code interpreter, ddoc 09 §4)
+# ==============================================================================
+#
+# Pure unit test of the code_run_js wrapping helpers (build_code_eval_wrapper /
+# format_code_result in browser_tool.h): JSON-literal embedding (injection
+# safety), timeout inlining, console hooks, and MCP result shaping/truncation.
+# Header-only — no httplib/CDP/model dependency. The live CDP eval path is
+# browser-gated and verified separately against Chrome.
+o/$(MODE)/tests/code_run_wrapper_test.o: tests/code_run_wrapper_test.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(TESTS_CPPFLAGS) -c -o $@ $<
+
+o/$(MODE)/tests/code_run_wrapper_test: \
+		o/$(MODE)/tests/code_run_wrapper_test.o
+	@mkdir -p $(@D)
+	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+# ==============================================================================
 # Phony targets
 # ==============================================================================
 
@@ -251,4 +269,5 @@ o/$(MODE)/tests: \
 	o/$(MODE)/tests/path_jail_test.runs \
 	o/$(MODE)/tests/agent_runtime_test.runs \
 	o/$(MODE)/tests/agent_runtime_sched_test.runs \
-	o/$(MODE)/tests/agent_runtime_mesh_demo.runs
+	o/$(MODE)/tests/agent_runtime_mesh_demo.runs \
+	o/$(MODE)/tests/code_run_wrapper_test.runs
