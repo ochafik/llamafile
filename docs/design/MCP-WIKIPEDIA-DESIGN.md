@@ -72,8 +72,13 @@ Ported `wikifile`'s `llamafile/zim/` (9 files) into a standalone cosmocc harness
 - **Implication**: the Wikipedia subsystem design is sound — reader reusable, **title-search-without-Xapian proven viable**. The #1 implementation task is the title-search fix: binary-search within the content-namespace sub-range, or (more robust for real Wikipedia) use the `X/listing/titleOrdered/v1` article index. The wikifile reader needs: this search fix + `extern "C"` + the embed wiring (`zim_open_fd`); decompress/html/path-lookup are reusable as-is.
 - Prototype artifacts: `scratchpad/zimproto/` (harness `zimtest.c`, the patched `zim_search.c`, test ZIMs).
 
-### P2 — native model→tool round-trip — PENDING (needs a tool-calling model)
-### P3 — MCP stdio client — PENDING (low risk; `posix_spawn` proven in `gpu_backend.c`)
+### P3 — MCP stdio client under cosmocc — ✅ VALIDATED (2026-06-29)
+Built a minimal MCP client (`scratchpad/mcpproto/mcp_client.cpp`, ~110 lines) with **cosmoc++** against the vendored `nlohmann/json` 3.12 (1.5M APE). It `posix_spawn`s a stub MCP server (`mcp_server_stub.py`), opens bidirectional pipes (`pipe2` + `posix_spawn_file_actions_adddup2`), and runs the real newline-JSON-RPC handshake:
+- `initialize` → `server=stub-mcp protocol=2025-06-18`; `notifications/initialized` (notify, no reply); `tools/list` → `echo`; `tools/call echo` → `"echo: hello from cosmocc MCP client"`; clean server exit 0.
+- Confirms: cosmocc subprocess+pipe IPC + newline-framed JSON-RPC with nlohmann all work → the MCP stdio transport is viable. (HTTP/SSE transport still relies on `cpp-httplib SSEClient`, untested but lower-risk.)
+
+### P2 — native model→tool round-trip — IN PROGRESS
+Downloading `unsloth/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf` (UD/Unsloth-Dynamic, 22GB; arch `qwen35moe`, supported by the vendored llama.cpp). Plan: run `llamafile --server --jinja` + POST `/v1/chat/completions` with a `search_wikipedia` tool def + a triggering prompt; confirm `finish_reason:"tool_calls"` + a parsed `tool_call` (proves the native tool-calling the `wikifile` effort lacked, on a real tool-capable model).
 
 ## 8. Phased implementation (after prototypes pass)
 1. Port `llamafile/zim/` + `--zim` + `/zim/*` endpoints (reader only). Gate: open a ZIM, search, fetch.
