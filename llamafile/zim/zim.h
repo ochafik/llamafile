@@ -129,6 +129,12 @@ void *zim_get_content(zim_archive *archive, const zim_entry *entry, size_t *size
 // Returns allocated buffer (caller must free with zim_free)
 char *zim_get_content_text(zim_archive *archive, const zim_entry *entry, size_t *size);
 
+// Get content as Markdown (converts HTML structure -> Markdown if content is
+// HTML; returns non-HTML content unchanged). Headings, lists, bold/italic and
+// links are preserved; internal ZIM links are rewritten to /wiki/<path>.
+// Returns allocated buffer (caller must free with zim_free).
+char *zim_get_content_markdown(zim_archive *archive, const zim_entry *entry, size_t *size);
+
 // Free content buffer returned by zim_get_content or zim_get_content_text
 void zim_free(void *ptr);
 
@@ -180,6 +186,17 @@ void zim_iterator_free(zim_iterator *iter);
 // Convert HTML content to plain text
 // Returns allocated buffer (caller must free with zim_free)
 char *zim_html_to_text(const char *html, size_t html_size, size_t *text_size);
+
+// Convert HTML content to Markdown (headings, lists, bold/italic, links).
+// Internal links are rewritten to /wiki/<path>; external links are preserved.
+// Returns allocated buffer (caller must free with zim_free).
+char *zim_html_to_markdown(const char *html, size_t html_size, size_t *md_size);
+
+// Rewrite a single HTML link target for the offline browser: internal ZIM
+// links -> /wiki/<path>; external/anchor/absolute targets are left untouched.
+// `out` must hold `outsz` bytes. Shared by the Markdown converter and the
+// in-process /wiki article browser.
+void zim_rewrite_link(const char *href, char *out, size_t outsz);
 
 // URL-decode a path string in place
 void zim_url_decode(char *path);

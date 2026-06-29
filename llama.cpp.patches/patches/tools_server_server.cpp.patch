@@ -1,5 +1,5 @@
 diff --git a/llama.cpp/tools/server/server.cpp b/llama.cpp/tools/server/server.cpp
-index bf3680b9f..fa7eba929 100644
+index bf3680b9f..156c57206 100644
 --- a/llama.cpp/tools/server/server.cpp
 +++ b/llama.cpp/tools/server/server.cpp
 @@ -14,6 +14,7 @@
@@ -10,7 +10,7 @@ index bf3680b9f..fa7eba929 100644
  #include <signal.h>
  #include <thread> // for std::thread::hardware_concurrency
  
-@@ -21,6 +22,39 @@
+@@ -21,6 +22,44 @@
  #include <windows.h>
  #endif
  
@@ -37,6 +37,11 @@ index bf3680b9f..fa7eba929 100644
 +void llamafile_webcam_register_routes(server_http_context & http,
 +                                      const common_params & params,
 +                                      std::function<llama_context *()> get_server_ctx);
++// llamafile WIKI BROWSER: register the GET /wiki/<path> offline-encyclopedia
++// route, streaming article HTML from the in-process ZIM with internal links
++// rewritten for click-through. (defined in llamafile/wiki_route.cpp)
++bool llamafile_wiki_enabled();
++void llamafile_wiki_register_routes(server_http_context & http);
 +// llamafile INTERACTIVE MULTI-AGENT RUNTIME (Phase 1): mailboxed, scheduled
 +// agents with spawn_agent/send_message/await/list_agents tools and /runtime/*
 +// HTTP+SSE endpoints. (defined in llamafile/agent_runtime_server.cpp)
@@ -50,7 +55,7 @@ index bf3680b9f..fa7eba929 100644
  static std::function<void(int)> shutdown_handler;
  static std::atomic_flag is_terminating = ATOMIC_FLAG_INIT;
  
-@@ -71,15 +105,26 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t
+@@ -71,15 +110,26 @@ static server_http_context::handler_t ex_wrapper(server_http_context::handler_t
      };
  }
  
@@ -81,7 +86,7 @@ index bf3680b9f..fa7eba929 100644
      common_init();
  
      if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
-@@ -239,13 +284,60 @@ int llama_server(int argc, char ** argv) {
+@@ -239,13 +289,60 @@ int llama_server(int argc, char ** argv) {
          ctx_http.post("/cors-proxy",      ex_wrapper(proxy_handler_post));
      }
      // EXPERIMENTAL built-in tools
@@ -143,7 +148,7 @@ index bf3680b9f..fa7eba929 100644
          SRV_WRN("%s", "-----------------\n");
          SRV_WRN("%s", "Built-in tools are enabled, do not expose server to untrusted environments\n");
          SRV_WRN("%s", "This feature is EXPERIMENTAL and may be changed in the future\n");
-@@ -254,6 +346,26 @@ int llama_server(int argc, char ** argv) {
+@@ -254,6 +351,35 @@ int llama_server(int argc, char ** argv) {
          ctx_http.post("/tools",           ex_wrapper(tools.handle_post));
      }
  
@@ -165,12 +170,21 @@ index bf3680b9f..fa7eba929 100644
 +        llamafile_runtime_register_routes(ctx_http);
 +        SRV_INF("%s", "agents: /runtime/{start,events,status,trace,stop} endpoints registered\n");
 +    }
++
++    // llamafile WIKI BROWSER: register GET /wiki/<path> when --zim opened a ZIM
++    // in-process. Streams the article HTML straight from the archive with
++    // internal links rewritten to /wiki/... so the user can click through the
++    // offline encyclopedia. Registered BEFORE the HTTP server starts.
++    if (llamafile_wiki_enabled()) {
++        llamafile_wiki_register_routes(ctx_http);
++        SRV_INF("%s", "wiki: GET /wiki/<path> offline-encyclopedia route registered\n");
++    }
 +#endif
 +
      //
      // Start the server
      //
-@@ -332,6 +444,13 @@ int llama_server(int argc, char ** argv) {
+@@ -332,6 +458,13 @@ int llama_server(int argc, char ** argv) {
              // this will unblock start_loop()
              ctx_server.terminate();
          };
@@ -184,7 +198,7 @@ index bf3680b9f..fa7eba929 100644
      }
  
      // TODO: refactor in common/console
-@@ -368,6 +487,11 @@ int llama_server(int argc, char ** argv) {
+@@ -368,6 +501,11 @@ int llama_server(int argc, char ** argv) {
      } else {
          SRV_INF("server is listening on %s\n", ctx_http.listening_address.c_str());
  
@@ -196,7 +210,7 @@ index bf3680b9f..fa7eba929 100644
          // optionally, notify router server that this instance is ready
          std::thread monitor_thread;
          if (child.is_child()) {
-@@ -392,5 +516,48 @@ int llama_server(int argc, char ** argv) {
+@@ -392,5 +530,48 @@ int llama_server(int argc, char ** argv) {
          }
      }
  
@@ -215,7 +229,7 @@ index bf3680b9f..fa7eba929 100644
 +#else
      return 0;
 +#endif
- }
++}
 +
 +// Standalone entry point for llama-server executable
 +// Not compiled when building as part of llamafile TUI (which has its own main)
@@ -243,5 +257,5 @@ index bf3680b9f..fa7eba929 100644
 +    }
 +#endif
 +    return server_main(argc, argv, nullptr, nullptr);
-+}
+ }
 +#endif

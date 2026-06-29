@@ -21,6 +21,7 @@
 #include "mcp_host.h"
 #include "agent_loop.h"
 #include "webcam_agent.h"
+#include "wiki_route.h"
 
 // llamafile interactive runtime (agent_runtime_server.cpp) — session root setter
 // for the --session-dir flag (cross-TU, same pattern as the other hooks).
@@ -210,6 +211,10 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
         if (strcmp(arg, "--zim") == 0) {
             if (i + 1 < argc) {
                 llamafile_mcp_add_server(self_mcp_server_spec("--zim", argv[i + 1]));
+                // ALSO open the ZIM in-process for the GET /wiki/<path> article
+                // browser (the subprocess bridge only speaks stdio JSON-RPC; the
+                // HTTP route needs an in-process handle). See wiki_route.cpp.
+                llamafile_wiki_enable(argv[i + 1]);
                 ++i;
             }
             continue;

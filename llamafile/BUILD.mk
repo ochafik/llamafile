@@ -160,6 +160,7 @@ LLAMAFILE_SRCS_CPP := \
 	llamafile/vlib_video/vlib_video_frame_filter.cpp \
 	llamafile/vlib_video/vlib_video_session.cpp \
 	llamafile/webcam_agent.cpp \
+	llamafile/wiki_route.cpp \
 	llamafile/string.cpp \
 	llamafile/wiki_cli.cpp \
 	llamafile/wiki_fts.cpp \
@@ -364,6 +365,13 @@ o/$(MODE)/llamafile/webcam_agent.o: llamafile/webcam_agent.cpp
 # runtime tools (server_tool subclasses) and /runtime/* HTTP+SSE endpoints, so it
 # needs the server include path (server-tools.h / server-http.h) like the others.
 o/$(MODE)/llamafile/agent_runtime_server.o: llamafile/agent_runtime_server.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(LLAMAFILE_CPPFLAGS) $(LLAMAFILE_SERVER_INCS) -c -o $@ $<
+
+# wiki_route.cpp: the GET /wiki/<path> offline-encyclopedia browser. It registers
+# a route on the server's http context and uses server_http_res/server_http_req,
+# so it needs the server include path (server-http.h) like webcam_agent.cpp does.
+o/$(MODE)/llamafile/wiki_route.o: llamafile/wiki_route.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(LLAMAFILE_CPPFLAGS) $(LLAMAFILE_SERVER_INCS) -c -o $@ $<
 

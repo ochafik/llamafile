@@ -171,28 +171,22 @@ json tool_wiki_search(const json & args) {
 }
 
 // -----------------------------------------------------------------
-// Tool: wiki_get_article
+// Article resolution (shared by wiki_get_article and wiki_open)
 // -----------------------------------------------------------------
+//
+// Resolve a title-or-path to a content entry, following redirects. Tries the
+// bare path first (modern "nons" ZIMs store flat paths like "Paris"), then the
+// namespace-qualified path ('C' new / 'A' old), then a title search. Returns
+// true and fills *e (redirect-resolved) on success.
 
-json tool_wiki_get_article(const json & args) {
-    std::string title;
-    if (args.contains("title") && args["title"].is_string()) {
-        title = args["title"].get<std::string>();
-    }
-    if (title.empty()) {
-        return text_result("error: missing required string argument 'title'", true);
-    }
-
-    zim_entry e;
+bool resolve_article(const std::string & title, zim_entry * e) {
     bool found = false;
-    // Try as a (namespace-qualified) path first, then the bare path under the
-    // content namespaces ('C' new / 'A' old), then fall back to a title search.
-    if (zim_get_entry_by_path(g_zim, title.c_str(), &e)) {
+    if (zim_get_entry_by_path(g_zim, title.c_str(), e)) {
         found = true;
     } else {
         std::string c = "C/" + title, a = "A/" + title;
-        if (zim_get_entry_by_path(g_zim, c.c_str(), &e) ||
-            zim_get_entry_by_path(g_zim, a.c_str(), &e)) {
+        if (zim_get_entry_by_path(g_zim, c.c_str(), e) ||
+            zim_get_entry_by_path(g_zim, a.c_str(), e)) {
             found = true;
         }
     }
@@ -207,24 +201,94 @@ json tool_wiki_get_article(const json & args) {
             }
         }
         if (pick < 0 && nr > 0) pick = 0;
-        if (pick >= 0) found = zim_get_entry_by_index(g_zim, results[pick].index, &e);
+        if (pick >= 0) found = zim_get_entry_by_index(g_zim, results[pick].index, e);
         if (nr > 0) zim_search_free(results, nr);
     }
+    if (found && e->is_redirect) zim_resolve_redirect(g_zim, e);
+    return found;
+}
 
-    if (!found) {
+// Percent-encode the few characters that would break a URL path component
+// (keep '/' and the safe ASCII set; the route URL-decodes on the way back in).
+std::string url_encode_path(const char * path) {
+    std::string out;
+    for (const unsigned char * p = (const unsigned char *) path; *p; p++) {
+        unsigned char c = *p;
+        if (c == ' ') { out += "%20"; }
+        else if (c == '#') { out += "%23"; }
+        else if (c == '?') { out += "%3F"; }
+        else if (c == '%') { out += "%25"; }
+        else out.push_back((char) c);
+    }
+    return out;
+}
+
+// -----------------------------------------------------------------
+// Tool: wiki_get_article
+// -----------------------------------------------------------------
+
+json tool_wiki_get_article(const json & args) {
+    std::string title;
+    if (args.contains("title") && args["title"].is_string()) {
+        title = args["title"].get<std::string>();
+    }
+    if (title.empty()) {
+        return text_result("error: missing required string argument 'title'", true);
+    }
+    // format: "markdown" (default — structured headings/lists/links) or "text"
+    // (the legacy flattened plain-text stripper; cheaper on tokens).
+    std::string format = "markdown";
+    if (args.contains("format") && args["format"].is_string()) {
+        format = args["format"].get<std::string>();
+    }
+
+    zim_entry e;
+    if (!resolve_article(title, &e)) {
         return text_result("Article not found: " + title, true);
     }
 
-    if (e.is_redirect) zim_resolve_redirect(g_zim, &e);
     size_t n = 0;
-    char * txt = zim_get_content_text(g_zim, &e, &n);
-    if (!txt || n == 0) {
-        if (txt) zim_free(txt);
+    char * body = (format == "text")
+        ? zim_get_content_text(g_zim, &e, &n)
+        : zim_get_content_markdown(g_zim, &e, &n);
+    if (!body || n == 0) {
+        if (body) zim_free(body);
         return text_result("Article has no readable text: " + title, true);
     }
-    std::string body(txt, n);
-    zim_free(txt);
-    return text_result(body);
+    std::string out(body, n);
+    zim_free(body);
+    return text_result(out);
+}
+
+// -----------------------------------------------------------------
+// Tool: wiki_open — resolve to a clickable offline-browser URL
+// -----------------------------------------------------------------
+//
+// Returns {url, title, path} where url = /wiki/<path> is served by the main
+// --server process (the in-process ZIM browser, see wiki_route.cpp): the agent
+// can hand the user a link to read the rendered article and click through.
+
+json tool_wiki_open(const json & args) {
+    std::string title;
+    if (args.contains("title") && args["title"].is_string()) {
+        title = args["title"].get<std::string>();
+    } else if (args.contains("path") && args["path"].is_string()) {
+        title = args["path"].get<std::string>();
+    }
+    if (title.empty()) {
+        return text_result("error: provide a string 'title' or 'path'", true);
+    }
+    zim_entry e;
+    if (!resolve_article(title, &e)) {
+        return text_result("Article not found: " + title, true);
+    }
+    std::string path = e.path ? e.path : title;
+    json out = {
+        { "url",   "/wiki/" + url_encode_path(path.c_str()) },
+        { "title", e.title ? e.title : path },
+        { "path",  path },
+    };
+    return text_result(out.dump(2));
 }
 
 // -----------------------------------------------------------------
@@ -252,18 +316,42 @@ void register_wiki_tools() {
 
     g_tools.push_back(Tool{
         "wiki_get_article",
-        "Fetch the full plain text of a Wikipedia article from the offline ZIM "
-        "archive, by title or path (as returned by wiki_search). Redirects are "
-        "resolved automatically.",
+        "Fetch a Wikipedia article from the offline ZIM archive, by title or path "
+        "(as returned by wiki_search). Returns clean Markdown by default "
+        "(headings, lists, bold/italic and [links](/wiki/...) you can click "
+        "through), or pass format:\"text\" for the cheaper flattened plain text. "
+        "Redirects are resolved automatically.",
         json{
             { "type", "object" },
             { "properties", json{
                 { "title", json{ { "type", "string" },
                                  { "description", "Article title or path (e.g. \"Eiffel Tower\")." } } },
+                { "format", json{ { "type", "string" },
+                                  { "enum", json::array({ "markdown", "text" }) },
+                                  { "description", "Output format: \"markdown\" (default, structured) or \"text\" (flattened plain text)." } } },
             } },
             { "required", json::array({ "title" }) },
         },
         tool_wiki_get_article,
+    });
+
+    g_tools.push_back(Tool{
+        "wiki_open",
+        "Resolve a Wikipedia article (by title or path) to a clickable URL into "
+        "the offline encyclopedia browser served by this llamafile. Returns "
+        "{url, title, path} where url is \"/wiki/<path>\" — hand it to the user so "
+        "they can open the rendered article and click through internal links. "
+        "Redirects are resolved automatically.",
+        json{
+            { "type", "object" },
+            { "properties", json{
+                { "title", json{ { "type", "string" },
+                                 { "description", "Article title (e.g. \"Eiffel Tower\")." } } },
+                { "path", json{ { "type", "string" },
+                                { "description", "Article path (alternative to title, e.g. \"Eiffel_Tower\")." } } },
+            } },
+        },
+        tool_wiki_open,
     });
 }
 
