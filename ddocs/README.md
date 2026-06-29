@@ -1,0 +1,64 @@
+# llamafile — agentic platform ddocs
+
+Design + research + validated prototypes for turning llamafile into a self-contained **agentic platform**: a server (and CLI) that runs tool-enabled agents — including a multi-agent web UI, embedded offline Wikipedia, MCP support, browser automation, and a Claude-Code/opencode-style coding agent — all from one portable APE binary serving one local model with continuous batching.
+
+Branch: `upgrade-2026` (off llamafile `main` / v0.10.x). Session: 2026-06-28/29.
+
+## Documents
+| # | Doc | What it covers | Headline |
+|---|-----|----------------|----------|
+| 01 | [mcp-wikipedia-design](01-mcp-wikipedia-design.md) | MCP support + embedded ZIM Wikipedia | One `server_tool` registry, two sources: **wiki inlined**, **MCP as a server-side host** bridging external servers. Native tool-calling replaces wikifile's dead-end pattern-detector. **P1/P2/P3 all validated.** |
+| 02 | [multiagent-webui-design](02-multiagent-webui-design.md) | Orchestrator + ideators + researchers + verifiers in the web UI | **Agent-as-tool** on the existing agentic loop; no deadlock (slot held only while generating); recommend **`-np 8`** (+KV math). Mock harness validated; **live run on real Qwen works**. |
+| 03 | [multiagent-best-practices-2026](03-multiagent-best-practices-2026.md) | June-2026 state of the art | Default 1 strong agent; **fan out for breadth/context-isolation only**; **one writer**; distilled payloads not transcripts; verify-before-commit; local-model reframe (parallel agents *are* the GPU batch; one model multiplies its own error rate). |
+| 04 | [browser-tool-design](04-browser-tool-design.md) | Generic `browser_*` tool (web research) | In-process **CDP**; **`cpp-httplib` v0.48 ships a WS client → zero new deps**. **ATTACH-to-user-browser** + LAUNCH modes (validated vs real Chrome 149). 7 tools + Readability + security guardrails. |
+| 05 | [agentic-coding-and-context](05-agentic-coding-and-context.md) | Long-context/compaction + coding-agent + CC/opencode drop-in | **Claude Code drop-in ~80% already built** (Anthropic `/v1/messages` API vendored, incl. a CC billing-header normalizer). Build+backend, don't vendor. Compaction: plan ~16–32K usable, trigger 70%, elide tool outputs first. |
+
+## Architecture in one picture
+```
+/v1/chat/completions (+ /v1/messages = Anthropic API)  ── native tool-calling (jinja + autoparser)
+        │ tool_calls
+   agentic loop  (browser agenticStore today; + server-side /v1/agentic for CLI/non-browser)
+        │ + agent-as-tool: orchestrator delegates to ideator/researcher/verifier sub-agents
+   server_tool registry (GET/POST /tools)
+     ├ built-in coding tools (read/write/edit/apply_diff/grep/glob/exec)   ← coding agent
+     ├ wiki_search / wiki_get_article  → inlined pure-C ZIM reader          ← embedded Wikipedia
+     ├ browser_* → in-process CDP (attach user browser, or launch)         ← web research
+     └ MCP-bridged tools  → external MCP servers (stdio / HTTP-SSE)        ← extensibility
+served by ONE llamafile + continuous batching (N slots) + (optional) bundled KV / QLoRA per role
+```
+
+## Prototypes (validated; drivers preserved in `prototypes/`)
+| Proto | What it proves | Status |
+|-------|----------------|--------|
+| `prototypes/p1-zim-zimtest.c` + `p1-zim_search-fixed.c` | wikifile ZIM reader compiles under cosmocc 4.0.2; reads real v5/v6 ZIMs (zstd decompress, HTML→text, path lookup); **title-search bug found+fixed** (header title-ptr list is (namespace,title)-ordered) | ✅ P1 |
+| (live test) | **Qwen3.6-35B-A3B** on `llamafile --server --jinja`: emits `search_wikipedia` tool_call → consumes result → grounded answer (full loop) | ✅ P2 |
+| `prototypes/p3-mcp_client.cpp` + `p3-mcp_server_stub.py` | cosmoc++ MCP client `posix_spawn`s a server, full `initialize`/`tools/list`/`tools/call` | ✅ P3 |
+| `prototypes/cdp_probe.py` | CDP LAUNCH (headless) + ATTACH (reuse running Chrome tab) navigate→extract, vs real Chrome 149 | ✅ |
+| `prototypes/orchestrate.py` | agent-as-tool orchestration; `--mock` (offline) + live against the llamafile server | ✅ (mock + live) |
+
+> Full ZIM reader (9 files) lives on the `wikifile` branch (`llamafile/zim/`); only the small prototype drivers are copied here. Test ZIMs: openzim zim-testing-suite (nons=v6, withns=v5).
+
+## Cross-cutting: "bundle it in the APE" (the meta theme)
+One portable binary can ship more than the model:
+| Artifact | Feasibility | Notes |
+|----------|-------------|-------|
+| Model GGUF | ✅ (today) | existing zip layer (zip64) |
+| ZIM Wikipedia | ✅ small inline / external `--zim` | `zim_open_fd` + zip; multi-GB → external path |
+| **Precomputed agent-prompt KV** | ✅ worth it | instant cold-start + N× shared-prefix reuse across slots; strict fingerprint (model+quant+tokenizer+prompt+ctx/rope+**KV dtype**+state-version); golem `golem_kv_session` is prior art |
+| **QLoRA role adapters** | ✅ per-slot LoRA *is* supported | role specialization from one base model. **Caveat:** different-adapter slots can't share a decode batch (serialize into per-adapter groups); a bundled KV is valid only for its exact adapter. Recommend prompt-only role steering first. |
+
+## Key deployment findings / open items
+- **CC drop-in is ~80% there** — `/v1/messages` already vendored; remaining = verify tool round-trip through it + beta-field tolerance. (doc 05)
+- **`-np`/`--parallel` rejected by the combined binary's front-end** ("invalid argument: N") though `--server --help` lists it; auto-defaults to 4 slots. Bumping needs an arg-passthrough fix (or use the standalone `llama-server` target). (doc 01 §7)
+- **SECURITY**: built-in file tools (`read_file`/`write_file`/`edit_file`/`apply_diff`) have **no cwd path-jail** — must add before shipping a coding agent. `exec_shell_command` has a 10s timeout. (doc 05)
+- **Compaction & context**: plan for ~16–32K *usable* context (not advertised 256K); compaction invalidates KV from the first divergent token. (doc 05)
+- x86 runtime check still owed for the Phase-4 IQ4_K AVX2 kernel (separate ik_llama initiative; see RESPAWN-2026-06.md on the `upgrade` branch).
+
+## Suggested build order
+1. Wire `wiki_search`/`wiki_get_article` `server_tool`s to the ported ZIM reader (P1) → first real embedded-wiki RAG.
+2. Server-side `/v1/agentic` loop (≈200 lines) reusing existing tools → CLI coding agent + non-browser agentic.
+3. MCP host (stdio) bridging external servers into the registry (P3 path).
+4. `browser_*` tools via in-process CDP (doc 04), ATTACH mode + guardrails.
+5. Multi-agent agent-as-tool in the web UI (doc 02); fix `-np` passthrough for `-np 8`.
+6. Optional: bundled KV / per-role QLoRA.
+7. Harden: file-tool path-jail; CC `/v1/messages` tool round-trip verification.
