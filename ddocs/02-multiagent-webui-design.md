@@ -329,3 +329,17 @@ python orchestrate.py --base-url http://localhost:8080/v1 --model qwen3.6-35b-a3
 - **R3** Metal wired-memory limit caps total KV — raise `iogpu.wired_limit_mb` for `-np 16`, or use
   Q8 KV.
 - **R4** context bloat if sub-agents return verbose transcripts — enforce summary-only returns (§6).
+
+---
+
+## Addendum — LIVE run on real Qwen3.6-35B-A3B (2026-06-29, CPU)
+
+Ran `prototypes/orchestrate.py` against `llamafile --server --jinja` (Qwen3.6-35B-A3B-UD-Q4_K_M, 4 auto slots), task: *"Compare the height of the Eiffel Tower and the Statue of Liberty, say which is taller."* (`--max-concurrency 4`). It exercised the full path before hitting the 600s wall-clock cap (exit 124 = timeout, not a crash):
+
+- ✅ **Mechanism works end-to-end on the real model**: orchestrator emitted `delegate_to_researcher`; each researcher ran its OWN multi-turn tool loop (`wiki_search`/`browser_open`/`web_fetch`) with real generation and returned a distilled result (researcher#2's final began *"Based on established records: Eiffel Tower Current Height: Approxim…"*). Agent-as-tool recursion confirmed live.
+- ✅ **Parallel tool calls within a turn work**: researchers emitted 2 `wiki_search` calls at once → the harness dispatches them concurrently (continuous-batching analogue).
+- ⚠️ **Orchestrator delegated SEQUENTIALLY** (researcher#1 at turn0, researcher#2 at turn1) rather than fanning out both in one turn — confirms risk **R4**: concurrent fan-out needs the orchestrator to emit *multiple* `delegate_*` calls per turn (prompt for it explicitly; else it's one-delegate-per-turn). Sub-agents DO parallelize, so the capability exists; it's an orchestrator-prompting issue.
+- ⚠️ **Loop-on-stub-tools**: with stub tools returning canned data, researchers re-called `wiki_search` across turns trying to get usable info → underscores best-practice §: real tool results + hard turn/loop caps + "don't repeat a failed tool" guards are mandatory (the harness has turn caps; tighten further).
+- ⚠️ **CPU is too slow for interactive multi-agent**: a single researcher's full loop took ~130–450s; the whole orchestration exceeded 600s. Correctness is proven; **speed needs GPU/Metal** (or a smaller/faster model for sub-agents — supports role-specialized small adapters/models). This is the strongest argument for finishing the Metal path.
+
+**Takeaways for implementation**: (1) prompt the orchestrator to fan out in one turn; (2) wire real tools (kills the loop); (3) keep hard caps; (4) interactive multi-agent wants GPU. The control flow + agent-as-tool + concurrent tool dispatch are validated; the bottlenecks are tool quality, orchestrator prompting, and CPU speed — all addressable.
