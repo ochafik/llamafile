@@ -1,18 +1,52 @@
 diff --git a/llama.cpp/tools/server/server-http.cpp b/llama.cpp/tools/server/server-http.cpp
-index 4f2abab00..f2935ab07 100644
+index 4f2abab00..34a86b16a 100644
 --- a/llama.cpp/tools/server/server-http.cpp
 +++ b/llama.cpp/tools/server/server-http.cpp
-@@ -11,6 +11,9 @@
+@@ -11,6 +11,18 @@
  #include <string>
  #include <thread>
  
 +#include <pthread.h>
 +#include <exception>
 +
++// llamafile: when --agents is active, transform the main UI page ("/") to
++// append a floating "Agents" launcher linking to the embedded /agents runtime
++// view. Implemented in llamafile/agent_runtime_server.cpp; a no-op (returns
++// false) otherwise. Keeps the prebuilt Svelte bundle untouched. Declared
++// unconditionally: this server-http.cpp object is built without LLAMAFILE_TUI,
++// but the symbol is always linked into the llamafile binary.
++bool llamafile_ui_inject_index(const unsigned char * data, std::size_t size,
++                               bool gzipped, std::string & out);
++
  //
  // HTTP implementation using cpp-httplib
  //
-@@ -489,6 +492,50 @@ static std::string build_query_string(const httplib::Request & req) {
+@@ -336,6 +348,24 @@ bool server_http_context::init(const common_params & params) {
+ 
+             auto serve_asset_cached = [](const std::string & name, bool isolation) {
+                 return [name, isolation](const httplib::Request & req, httplib::Response & res) {
++                    // llamafile: inject the multi-agent "Agents" launcher into the
++                    // main UI page when --agents is active. Serves an uncompressed,
++                    // transformed copy of index.html; a no-op otherwise.
++                    if (name == "index.html") {
++                        if (const llama_ui_asset * ia = llama_ui_find_asset(name)) {
++                            std::string injected;
++                            if (llamafile_ui_inject_index(ia->data, ia->size,
++                                                          llama_ui_use_gzip(), injected)) {
++                                if (isolation) {  // preserve the original index's cross-origin isolation
++                                    res.set_header("Cross-Origin-Embedder-Policy", "require-corp");
++                                    res.set_header("Cross-Origin-Opener-Policy",   "same-origin");
++                                }
++                                res.set_header("Cache-Control", "no-cache");
++                                res.set_content(injected, "text/html; charset=utf-8");
++                                return false;
++                            }
++                        }
++                    }
+                     if (!handle_gzip_header(req, res)) {
+                         return true; // returns error message
+                     }
+@@ -489,6 +519,50 @@ static std::string build_query_string(const httplib::Request & req) {
  // using unique_ptr for request to allow safe capturing in lambdas
  using server_http_req_ptr = std::unique_ptr<server_http_req>;
  
@@ -63,7 +97,7 @@ index 4f2abab00..f2935ab07 100644
  static void process_handler_response(server_http_req_ptr && request, server_http_res_ptr & response, httplib::Response & res) {
      if (response->is_stream()) {
          res.status = response->status;
-@@ -538,7 +585,7 @@ void server_http_context::get(const std::string & path, const server_http_contex
+@@ -538,7 +612,7 @@ void server_http_context::get(const std::string & path, const server_http_contex
              {},
              req.is_connection_closed
          });
@@ -72,7 +106,7 @@ index 4f2abab00..f2935ab07 100644
          process_handler_response(std::move(request), response, res);
      });
  }
-@@ -585,7 +632,7 @@ void server_http_context::post(const std::string & path, const server_http_conte
+@@ -585,7 +659,7 @@ void server_http_context::post(const std::string & path, const server_http_conte
              std::move(files),
              req.is_connection_closed
          });
@@ -81,7 +115,7 @@ index 4f2abab00..f2935ab07 100644
          process_handler_response(std::move(request), response, res);
      });
  }
-@@ -602,7 +649,7 @@ void server_http_context::del(const std::string & path, const server_http_contex
+@@ -602,7 +676,7 @@ void server_http_context::del(const std::string & path, const server_http_contex
              {},
              req.is_connection_closed
          });

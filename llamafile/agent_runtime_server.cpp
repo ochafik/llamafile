@@ -44,11 +44,14 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
+
+#include "third_party/zlib/zlib.h"  // gunzip the embedded index.html for injection
 
 using agentrt::Runtime;
 using agentrt::Agent;
@@ -1073,7 +1076,122 @@ void llamafile_runtime_set_session_root(const char * dir) {
     if (dir && *dir) g_session_root = dir;
 }
 
+// ---------------------------------------------------------------------------
+// Main web-UI launcher injection.
+//
+// The primary chat UI is the PREBUILT llama.cpp Svelte/PWA bundle (fetched by
+// llama.cpp.patches/fetch-ui-assets.sh and embedded as gzip-compressed assets);
+// its source is not built here. To surface the multi-agent runtime INSIDE that
+// UI without rebuilding the bundle, we transform the bytes served at "/" when
+// --agents is active: gunzip index.html, append a tiny floating "Agents"
+// launcher (a link to the embedded /agents view), and serve it uncompressed.
+// With --agents off this is a no-op and the asset is served unchanged.
+//
+// Called from server-http.cpp's index.html handler (declared there under
+// LLAMAFILE_TUI). g_inject_launcher is armed in register_routes() below, which
+// only runs when sub-agents are enabled.
+// ---------------------------------------------------------------------------
+static bool g_inject_launcher = false;
+
+static bool gunzip_to_string(const unsigned char * in, size_t in_n, std::string & out) {
+    z_stream zs;
+    memset(&zs, 0, sizeof zs);
+    if (inflateInit2(&zs, 16 + MAX_WBITS) != Z_OK) return false;  // 16 => gzip header
+    zs.next_in  = const_cast<Bytef *>(in);
+    zs.avail_in = (uInt) in_n;
+    char buf[16384];
+    int rc;
+    do {
+        zs.next_out  = reinterpret_cast<Bytef *>(buf);
+        zs.avail_out = sizeof buf;
+        rc = inflate(&zs, Z_NO_FLUSH);
+        if (rc != Z_OK && rc != Z_STREAM_END) { inflateEnd(&zs); return false; }
+        out.append(buf, sizeof buf - zs.avail_out);
+    } while (rc != Z_STREAM_END);
+    inflateEnd(&zs);
+    return true;
+}
+
+// A self-contained, dependency-free floating launcher appended before </body>.
+// It mounts a separate child of <body>, so Svelte hydration (which renders into
+// its own container div) leaves it untouched.
+static const char * kAgentsLauncher = R"HTML(
+<script>
+(function(){
+  try{
+    if (window.top !== window.self) return;            // not inside an iframe
+    if (document.getElementById('llamafile-agents-launcher')) return;
+    var a = document.createElement('button');
+    a.id = 'llamafile-agents-launcher';
+    a.type = 'button';
+    a.title = 'Open the multi-agent runtime — live agent lanes, sessions & traces';
+    a.innerHTML = '<span style="font-size:15px;line-height:1">\u{1F9E9}</span><span>Agents</span>';
+    a.style.cssText = [
+      'position:fixed','right:18px','bottom:18px','z-index:2147483647',
+      'display:flex','align-items:center','gap:8px',
+      'padding:9px 14px','border-radius:999px',
+      'background:#1f6f54','color:#eafff6',
+      'font:600 13px/1 ui-sans-serif,system-ui,sans-serif',
+      'text-decoration:none','box-shadow:0 4px 14px rgba(0,0,0,.35)',
+      'border:1px solid #2c9472','cursor:pointer',
+      'transition:background .15s, transform .15s'
+    ].join(';');
+    a.onmouseenter=function(){a.style.background='#26865f';a.style.transform='translateY(-1px)';};
+    a.onmouseleave=function(){a.style.background='#1f6f54';a.style.transform='none';};
+
+    // Open the agents runtime as a full-screen OVERLAY inside the main UI rather
+    // than navigating away. A plain link to /agents would be shadowed by the PWA
+    // service worker (workbox NavigationRoute serves the cached chat shell for
+    // every same-origin navigation). Instead we fetch /agents (request.mode
+    // 'cors' — not a navigation, so the SW passes it through to the server) and
+    // render it in an <iframe srcdoc> with an injected <base> so the agents UI's
+    // own same-origin requests (/sessions, /session/:id/events …) resolve to the
+    // server. No navigation occurs, so the SW never intercepts.
+    var frame = null;
+    function close(){ if(frame){ frame.remove(); frame=null; } }
+    function open(){
+      if(frame){ close(); return; }
+      fetch('/agents', {headers:{'Accept':'text/html'}}).then(function(r){return r.text();}).then(function(html){
+        var base = '<base href="'+location.origin+'/">';
+        if(/<head[^>]*>/i.test(html)) html = html.replace(/<head([^>]*)>/i, '<head$1>'+base);
+        else html = base + html;
+        frame = document.createElement('iframe');
+        frame.id = 'llamafile-agents-overlay';
+        frame.setAttribute('title','llamafile agents');
+        frame.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;border:0;z-index:2147483646;background:#0b0d10';
+        frame.srcdoc = html;
+        document.body.appendChild(frame);
+      }).catch(function(){ window.location.href='/agents'; });   // last-resort fallback
+    }
+    a.addEventListener('click', function(e){ e.preventDefault(); open(); });
+    // the embedded agents page asks to close via postMessage (its "Close" button)
+    window.addEventListener('message', function(ev){ if(ev && ev.data==='lf-close-agents') close(); });
+
+    function mount(){ if(document.body && !document.getElementById('llamafile-agents-launcher')) document.body.appendChild(a); }
+    if(document.body) mount(); else addEventListener('DOMContentLoaded', mount);
+  }catch(e){}
+})();
+</script>
+)HTML";
+
+// Transform the served "/" page. Returns true (filling `out` with an
+// uncompressed, launcher-injected copy) only when --agents is active; otherwise
+// returns false and the caller serves the embedded asset unchanged.
+bool llamafile_ui_inject_index(const unsigned char * data, size_t size,
+                               bool gzipped, std::string & out) {
+    if (!g_inject_launcher) return false;
+    std::string html;
+    if (gzipped) { if (!gunzip_to_string(data, size, html)) return false; }
+    else         { html.assign(reinterpret_cast<const char *>(data), size); }
+    static const std::string marker = "</body>";
+    size_t pos = html.rfind(marker);
+    if (pos == std::string::npos) out = html + kAgentsLauncher;
+    else                          out = html.substr(0, pos) + kAgentsLauncher + html.substr(pos);
+    return true;
+}
+
 void llamafile_runtime_register_routes(server_http_context & http) {
+    g_inject_launcher = true;  // arm the main-UI "Agents" launcher injection
     // Phase 4: multi-session endpoints.
     http.post("/session",              handle_session_create);
     http.get ("/sessions",             handle_sessions_list);

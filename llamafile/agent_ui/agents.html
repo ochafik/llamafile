@@ -30,6 +30,9 @@
  h1{font:600 14px ui-sans-serif;margin:0;padding:12px 14px;border-bottom:1px solid #1c232b;
     display:flex;align-items:center;gap:8px}
  h1 .dot{width:8px;height:8px;border-radius:50%;background:#7fd1b9}
+ h1 a.back{margin-left:auto;font:600 11px ui-sans-serif;color:#8fb0d6;text-decoration:none;
+           border:1px solid #2b3a47;border-radius:6px;padding:3px 8px}
+ h1 a.back:hover{background:#1b2530;color:#dbe6f0}
  /* ---- session manager (left) ---- */
  #side{border-right:1px solid #1c232b;display:flex;flex-direction:column;min-height:0}
  #side .hd{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;
@@ -69,9 +72,12 @@
  #final .box b{color:#7fd1b9;display:block;margin-bottom:5px;font:600 11px ui-sans-serif;
                text-transform:uppercase;letter-spacing:.05em}
  #lanes{overflow:auto;flex:1;padding:10px 14px}
- .lane{border-left:2px solid #243240;margin:0 0 8px 0;padding:0 0 0 10px}
- .lane .ah{display:flex;align-items:center;gap:8px;position:sticky;top:0;background:#0b0d10;
-           padding:5px 0;z-index:1}
+ .lane{border-left:2px solid var(--lc,#2c3a47);margin:0 0 10px 0;padding:0 0 2px 12px;
+       border-radius:0 6px 6px 0}
+ .lane .ah{display:flex;align-items:center;gap:8px;position:sticky;top:0;
+           background:linear-gradient(#11161c,#0d1116);padding:6px 8px;z-index:1;
+           border:1px solid #1c232b;border-left:3px solid var(--lc,#2c3a47);border-radius:6px}
+ .lane .evs{padding:3px 0 0 8px}
  .lane .nm{font:600 13px ui-sans-serif}
  .lane .rl{font:11px ui-monospace,monospace;color:#7e8a96}
  .lane .tk{font:11px ui-monospace,monospace;color:#5b6672;margin-left:auto}
@@ -88,17 +94,38 @@
  .ev.message .tx{color:#c79bf0}.ev.spawn .tx{color:#e0b057}.ev.await .tx{color:#7fb0e0}
  .ev.final .tx{color:#7fd1b9}.ev.guard .tx{color:#e06b6b}.ev.wait .tx,.ev.poll .tx{color:#9ab6e0}
  .ev .k{color:#5b6672}
- #conn{font:11px ui-monospace,monospace;color:#5b6672;margin-left:auto}
+ #conn{font:600 11px ui-monospace,monospace;color:#5b6672;margin-left:auto;
+       border:1px solid #1c232b;border-radius:10px;padding:2px 8px;white-space:nowrap}
+ #conn.live{color:#7fd1b9;border-color:#1f6f54;background:#0f1a16}
+ #conn.closed{color:#8fb0d6;border-color:#27343f}
+ #conn.warn{color:#e0c057;border-color:#3a3417;background:#171502}
+ /* ---- inline new-session form ---- */
+ #newForm{display:none;flex-direction:column;gap:6px;padding:8px 10px;border-bottom:1px solid #1c232b;
+          background:#0e1217}
+ #newForm.open{display:flex}
+ #newForm textarea{width:100%;resize:vertical;min-height:46px;background:#0b0d10;color:#e6e8eb;
+   border:1px solid #2b3a47;border-radius:6px;padding:7px 8px;font:13px ui-sans-serif}
+ #newForm textarea:focus{outline:none;border-color:#3a7d99}
+ #newForm .nf-row{display:flex;gap:6px;justify-content:flex-end}
+ #newForm .nf-hint{font:11px ui-sans-serif;color:#5b6672}
 </style></head><body>
 
 <div id="side">
-  <h1><span class="dot"></span> llamafile agents</h1>
+  <h1><span class="dot"></span> llamafile agents <a class="back" id="backChat" href="/" title="Back to the main chat">← Chat</a></h1>
   <div class="hd"><b>Sessions</b>
     <span style="display:flex;gap:6px">
       <button id="newBtn" class="primary">+ New</button>
       <button id="refBtn" title="refresh now">↻</button>
     </span>
   </div>
+  <form id="newForm" autocomplete="off">
+    <span class="nf-hint">New session goal / objective:</span>
+    <textarea id="newGoal" placeholder="e.g. compare Eiffel Tower and Statue of Liberty heights"></textarea>
+    <div class="nf-row">
+      <button type="button" id="newCancel">Cancel</button>
+      <button type="submit" class="primary" id="newStart">Start session</button>
+    </div>
+  </form>
   <div id="sessions"><div class="empty">loading…</div></div>
 </div>
 
@@ -176,16 +203,32 @@ async function refreshSessions(){
   }catch(e){ $("#sessions").innerHTML = `<div class="empty">/sessions error: ${esc(e.message)}</div>`; }
 }
 
-$("#newBtn").onclick = async ()=>{
-  const goal = prompt("New session goal / objective:",
-    "compare Eiffel Tower and Statue of Liberty heights");
-  if(!goal) return;
+// ---- inline new-session form (replaces the old prompt() dialog) ------------
+function openNewForm(open){
+  const f = $("#newForm");
+  f.classList.toggle("open", open);
+  if(open){ $("#newGoal").focus(); }
+}
+$("#newBtn").onclick = ()=> openNewForm(!$("#newForm").classList.contains("open"));
+$("#newCancel").onclick = ()=> openNewForm(false);
+async function submitNew(){
+  const ta = $("#newGoal");
+  const goal = ta.value.trim();
+  if(!goal){ ta.focus(); return; }
+  const btn = $("#newStart"); btn.disabled = true; btn.textContent = "Starting…";
   try{
     const j = await api("POST", "/session", {goal});
+    ta.value = ""; openNewForm(false);
     await refreshSessions();
     if(j && j.session) select(j.session);
   }catch(e){ alert("create failed: "+e.message); }
-};
+  finally{ btn.disabled = false; btn.textContent = "Start session"; }
+}
+$("#newForm").addEventListener("submit", e=>{ e.preventDefault(); submitNew(); });
+// Cmd/Ctrl+Enter submits from the textarea.
+$("#newGoal").addEventListener("keydown", e=>{
+  if((e.metaKey||e.ctrlKey) && e.key==="Enter"){ e.preventDefault(); submitNew(); }
+});
 $("#refBtn").onclick = refreshSessions;
 
 // ---- live agent lanes (right panel) ----------------------------------------
@@ -202,9 +245,14 @@ function ensureAgent(id){
   return a;
 }
 
+// distinct accent per nesting depth, so the parent→child tree reads at a glance
+const LANE_COLORS = ["#3a7d99","#2c9472","#b08a2c","#9a6fc0","#c06b6b","#5a8fd6"];
+const laneColor = d => LANE_COLORS[(d||0) % LANE_COLORS.length];
+
 function laneEl(a){
   const lane = document.createElement("div");
-  lane.className = "lane"; lane.style.marginLeft = (a.depth*16)+"px";
+  lane.className = "lane"; lane.style.marginLeft = (a.depth*18)+"px";
+  lane.style.setProperty("--lc", laneColor(a.depth));
   lane.innerHTML =
     `<div class="ah"><span class="nm"></span><span class="rl"></span>`+
     `<span class="stat"></span><span class="tk"></span></div><div class="evs"></div>`;
@@ -235,7 +283,9 @@ function layoutLanes(){
   // any orphans (parent not yet known) at the end
   for(const a of AGENTS.values()) if(!order.includes(a)) order.push(a);
   host.innerHTML="";
-  for(const a of order){ if(!a.el) laneEl(a); a.el.style.marginLeft=(a.depth*16)+"px";
+  for(const a of order){ if(!a.el) laneEl(a);
+                         a.el.style.marginLeft=(a.depth*18)+"px";
+                         a.el.style.setProperty("--lc", laneColor(a.depth));
                          refreshLaneHead(a); host.appendChild(a.el); }
 }
 
@@ -370,11 +420,32 @@ async function select(id){
       for(const ln of txt.split("\n")){ const s=ln.trim(); if(s) ingest(s); } }
   }catch(_){}
   // 3. live-tail SSE (replays from 0; dedup collapses the overlap with trace)
-  $("#conn").textContent = "● live";
+  setConn("live", "● live");
   ES = new EventSource(`/session/${encodeURIComponent(id)}/events`);
+  ES.onopen = ()=>{ if(SELECTED===id) setConn("live","● live"); };
   ES.onmessage = m => { if(SELECTED===id) ingest(m.data); };
-  ES.addEventListener("close", ()=>{ $("#conn").textContent="○ closed"; });
-  ES.onerror = ()=>{ $("#conn").textContent="○ reconnecting…"; };
+  ES.addEventListener("close", ()=>{ setConn("closed","○ closed"); });
+  ES.onerror = ()=>{ if(SELECTED===id) setConn("warn","○ reconnecting…"); };
+}
+
+function setConn(cls, text){
+  const c = $("#conn");
+  c.className = cls || "";
+  c.textContent = text;
+}
+
+// ---- embedded-overlay mode -------------------------------------------------
+// When opened as the main-UI overlay (an <iframe> injected by the chat page),
+// the "← Chat" link becomes a "Close" action that dismisses the overlay instead
+// of navigating (which the PWA service worker would otherwise hijack).
+if (window.parent && window.parent !== window) {
+  const b = $("#backChat");
+  if (b) {
+    b.textContent = "× Close";
+    b.title = "Close the agents panel";
+    b.href = "#";
+    b.onclick = (e)=>{ e.preventDefault(); try{ parent.postMessage("lf-close-agents","*"); }catch(_){} };
+  }
 }
 
 // ---- boot ------------------------------------------------------------------
