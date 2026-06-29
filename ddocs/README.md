@@ -62,3 +62,20 @@ One portable binary can ship more than the model:
 5. Multi-agent agent-as-tool in the web UI (doc 02); fix `-np` passthrough for `-np 8`.
 6. Optional: bundled KV / per-role QLoRA.
 7. Harden: file-tool path-jail; CC `/v1/messages` tool round-trip verification.
+
+---
+
+## Implementation status (live — 2026-06-29)
+Doc set: 01 mcp-wikipedia · 02 multiagent-webui · 03 best-practices · 04 browser-tool · 05 agentic-coding/context · **06 server-side-tools-api** · **07 wikidata+graph-engines (+measured storage bench)** · **08 embeddable-vector-search**.
+
+**SHIPPED (origin/upgrade-2026, llama.cpp UNTOUCHED — all llamafile-owned, no patches):**
+- ✅ **`llamafile wikipedia search|get`** — fast (0.17s, no model load) offline Wikipedia CLI; works on real ~250k-article ZIM (fixes: `X/listing/titleOrdered/v1` title index + streaming-zstd content). Usable by humans/scripts/**CC-via-Bash**.
+- ✅ **`llamafile mcp-server [--zim]`** — MCP server (stdio JSON-RPC) exposing `wiki_search`/`wiki_get_article` via a data-driven tool registry. `claude mcp add wikipedia -- llamafile mcp-server --zim wiki.zim`. The tool-exposure backbone (one handler, three surfaces — ddoc 06).
+- ✅ **CC drop-in** — `/v1/messages` full multi-turn tool round-trip verified on Qwen3.6-35B-A3B.
+
+**Verdicts (research closed):**
+- **Wikidata store = SQLite + FTS5** (already vendored in cosmo w/ FTS5; measured: 0.02ms point / 0.10ms FTS @ scale; ~68GB@113M, −30–50% w/ ETL refresh). DuckDB's weakness was text-search, not lookups. Refresh the user's `~/github/ai/graphs/` ETL (newer dump + best-rank + unit-id) to build it.
+- **Semantic search = `sqlite-vec`** (static in the same SQLite, brute-force ≤~1–5M) → **`usearch`** mmap-HNSW for real scale. `sqlite-vector` rejected (brute-force + Elastic License). Embed via llamafile `--embedding` (nomic-text-v1.5, reusing graphs/ stack).
+- → **One SQLite file unifies exact + FTS5 + vector; one embedding path; zero new deps.**
+
+**Build order progress:** 1 wiki ✅ → MCP server ✅ → **browser_* (CDP) [in progress]** → server-side agentic loop / server-side tools → multi-agent web UI → harden (file-tool path-jail) → [queued] video webcam-agent (`~/github/llama.cpp-video-ddocs/`, derisked, rides this stack).
