@@ -144,6 +144,28 @@ o/$(MODE)/tests/zim_reader_test: \
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # ==============================================================================
+# Test: zim_xapian_test (Xapian Glass BM25 reader, against the real ZIM)
+# ==============================================================================
+#
+# Drives the llamafile/zim/zim_xapian.c full-text reader over the real
+# Simple-English Wikipedia ZIM (X/fulltext/xapian Glass index): BM25 ranking of
+# tokyo/japan/einstein/"TNT inventor", doclen normalization, and the title
+# index. The ~1 GB ZIM is not committed, so the test SKIPS (exit 0) when absent.
+
+ZIM_XAPIAN_TEST_DEPS := \
+	o/$(MODE)/llamafile/zim/zim.a
+
+o/$(MODE)/tests/zim_xapian_test.o: tests/zim_xapian_test.c
+	@mkdir -p $(@D)
+	$(CC) $(CCFLAGS) $(CPPFLAGS) $(TESTS_CPPFLAGS) -iquote llamafile/zim -c -o $@ $<
+
+o/$(MODE)/tests/zim_xapian_test: \
+		o/$(MODE)/tests/zim_xapian_test.o \
+		$(ZIM_XAPIAN_TEST_DEPS)
+	@mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+# ==============================================================================
 # Test: wikidata_test (llamafile/wikidata reader; self-built SQLite+FTS5 fixture)
 # ==============================================================================
 #
@@ -310,6 +332,7 @@ o/$(MODE)/tests: \
 	o/$(MODE)/tests/fa_helpers_test.runs \
 	o/$(MODE)/tests/gpu_backend_test.runs \
 	o/$(MODE)/tests/zim_reader_test.runs \
+	o/$(MODE)/tests/zim_xapian_test.runs \
 	o/$(MODE)/tests/wikidata_test.runs \
 	o/$(MODE)/tests/wiki_fts_test.runs \
 	o/$(MODE)/tests/path_jail_test.runs \
