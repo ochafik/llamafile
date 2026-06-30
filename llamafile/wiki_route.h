@@ -58,3 +58,10 @@ int llamafile_wiki_register_tools(server_tools & registry);
 // server.cpp seam BEFORE the HTTP server starts. Opens the in-process ZIM
 // handles if not already open; a failed open is logged, not fatal.
 void llamafile_wiki_register_routes(server_http_context & http);
+
+// Kick off a NON-BLOCKING background warm-up of every registered ZIM's Xapian
+// indexes (fulltext + title), so the FIRST zim_search hits warm B-trees instead
+// of paying ~30s of lazy page-faults from the (often external-disk / /zip-backed)
+// bundle. Runs on a detached thread; no-op unless --zim was given. Spawned from
+// llamafile_wiki_register_routes as the server comes up.
+void llamafile_wiki_warm();

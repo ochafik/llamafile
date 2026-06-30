@@ -47,8 +47,12 @@
 
 #include <nlohmann/json.hpp>
 
+#include <pthread.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -972,6 +976,94 @@ struct ListZimsTool : server_tool {
     }
 };
 
+// ---------------------------------------------------------------------------
+// startup warm-up
+// ---------------------------------------------------------------------------
+//
+// The 21 ZIM Xapian indexes fault in lazily from the (often /zip-backed,
+// possibly external-disk) bundle the FIRST time a query touches them, so a cold
+// first `zim_search` pays ~30s of B-tree-root + hot-block page faults. This
+// detached background thread does that faulting AHEAD of the first real user
+// query: for every registered ZIM it runs the same ensure_xapian() open path,
+// then a trivial throwaway query ("the", limit 1) against the fulltext + title
+// Glass indexes so their B-tree roots and hot postlist blocks are resident. The
+// first real search then hits warm indexes.
+//
+// It grabs g_zim_mu PER ZIM (released between archives) because the zim reader's
+// cluster cache + the Xapian readers are not thread-safe. A live search arriving
+// mid-warm therefore interleaves between archives rather than waiting for the
+// whole sweep — though, by necessity, it still serializes with whichever single
+// ZIM is being faulted at that instant (see the report's caveat).
+
+// Fault one Glass index's hot blocks with a throwaway BM25 query. Caller holds
+// g_zim_mu (the Xapian readers are not thread-safe).
+void warm_xapian(zim_xapian * idx) {
+    if (!idx) return;
+    zim_xapian_hit * hits = nullptr;
+    int nh = zim_xapian_search(idx, "the", 1, &hits);
+    if (nh > 0) zim_xapian_free_hits(hits, nh);
+}
+
+void * wiki_warm_thread_fn(void *) {
+    // Let startup logs settle and the model/HTTP bring-up finish its own I/O
+    // before we start faulting indexes (this thread is fully detached, so the
+    // delay never holds anything up).
+    usleep(1500 * 1000);
+
+    size_t n;
+    {
+        std::lock_guard<std::mutex> lk(g_zim_mu);
+        ensure_zims_open();
+        n = g_zims.size();
+    }
+    if (n == 0) return nullptr;
+
+    fprintf(stderr, "wiki: warming %zu ZIM index%s in the background…\n",
+            n, n == 1 ? "" : "es");
+    auto t_all0 = std::chrono::steady_clock::now();
+
+    for (size_t i = 0; i < n; i++) {
+        auto t0 = std::chrono::steady_clock::now();
+        std::string id;
+        bool had_ft = false;
+        try {
+            // Per-ZIM lock: released before the next archive so a concurrent
+            // user search can slip in between archives instead of waiting out
+            // the whole sweep.
+            std::lock_guard<std::mutex> lk(g_zim_mu);
+            if (i >= g_zims.size()) break;
+            ZimHandle & h = g_zims[i];
+            id = h.id;
+            ensure_xapian(h);            // open X/fulltext + X/title (+ stemmer)
+            had_ft = (h.fulltext != nullptr);
+            warm_xapian(h.fulltext);     // fault the fulltext Glass B-tree
+            warm_xapian(h.title);        // fault the title Glass B-tree
+            // also exercise the reader's own title-listing search path
+            zim_search_result r[1];
+            int nr = zim_search(h.z, "the", r, 1);
+            if (nr > 0) zim_search_free(r, nr);
+        } catch (const std::exception & e) {
+            fprintf(stderr, "wiki: warm[%s] error: %s\n",
+                    id.empty() ? "?" : id.c_str(), e.what());
+            continue;
+        } catch (...) {
+            fprintf(stderr, "wiki: warm[%s] error: unknown exception\n",
+                    id.empty() ? "?" : id.c_str());
+            continue;
+        }
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - t0).count();
+        fprintf(stderr, "wiki: warm[%s] %lldms%s\n", id.c_str(), (long long) ms,
+                had_ft ? "" : " (no fulltext index — skipped)");
+    }
+
+    double secs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - t_all0).count() / 1000.0;
+    fprintf(stderr, "wiki: all %zu ZIM index%s warm in %.1fs\n",
+            n, n == 1 ? "" : "es", secs);
+    return nullptr;
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -1002,6 +1094,8 @@ int llamafile_wiki_register_tools(server_tools & registry) {
     return 4;
 }
 
+void llamafile_wiki_warm();  // fwd decl (defined just below)
+
 void llamafile_wiki_register_routes(server_http_context & http) {
     {
         std::lock_guard<std::mutex> lk(g_zim_mu);
@@ -1010,4 +1104,27 @@ void llamafile_wiki_register_routes(server_http_context & http) {
     // regex routes ("(.*)" captures sub-paths containing '/').
     http.get("/zim/(.*)", handle_zim);
     http.get("/wiki/(.*)", handle_wiki);  // back-compat alias -> first ZIM
+    llamafile_wiki_warm();  // start the background index warm-up (detached)
+}
+
+// Kick off the background index warm-up (no-op if nothing was registered). Runs
+// on a DETACHED thread so it never delays startup, /health, or the first
+// request; called from the server-ready seam (llamafile_wiki_register_routes,
+// which server.cpp invokes as the HTTP server comes up). An explicit 8 MiB stack
+// matches the other llamafile loopback/boot workers (Cosmopolitan's default
+// thread stack is too small for the Xapian + nlohmann call chains).
+void llamafile_wiki_warm() {
+    {
+        std::lock_guard<std::mutex> lk(g_zim_mu);
+        if (g_zim_paths.empty()) return;  // no --zim => nothing to warm
+    }
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 8 * 1024 * 1024);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_t tid;
+    if (pthread_create(&tid, &attr, wiki_warm_thread_fn, nullptr) != 0) {
+        fprintf(stderr, "wiki: failed to spawn warm-up thread\n");
+    }
+    pthread_attr_destroy(&attr);
 }
