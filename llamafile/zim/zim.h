@@ -138,6 +138,22 @@ char *zim_get_content_markdown(zim_archive *archive, const zim_entry *entry, siz
 // Free content buffer returned by zim_get_content or zim_get_content_text
 void zim_free(void *ptr);
 
+// Memory-map an entry's content read-only, WITHOUT reading/copying it, when the
+// content is stored uncompressed (cluster compression NONE) and so lives
+// contiguously in the file. On success returns a pointer to the content, sets
+// *size, and sets *map_base/*map_len to the values to hand back to
+// zim_unmap_content() (the mapping may start a little before the content because
+// mmap offsets are page-aligned). Returns NULL when the entry is compressed, a
+// redirect, or mmap fails — the caller should then fall back to
+// zim_get_content(). This is how the (multi-GB, uncompressed) embedded Xapian
+// indexes are opened in O(1) with only the touched B-tree pages faulting in,
+// instead of slurping the whole cluster into RAM.
+const void *zim_map_content(zim_archive *archive, const zim_entry *entry,
+                            size_t *size, void **map_base, size_t *map_len);
+
+// Release a mapping returned by zim_map_content (no-op when map_base is NULL).
+void zim_unmap_content(void *map_base, size_t map_len);
+
 // -----------------------------------------------------------------
 // Search
 // -----------------------------------------------------------------

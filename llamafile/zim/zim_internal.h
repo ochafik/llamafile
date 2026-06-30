@@ -109,6 +109,8 @@ struct zim_archive {
     // Path pointer cache (mmap'd or loaded)
     uint64_t *path_ptrs;              // Array of entry offsets
     bool path_ptrs_mmaped;
+    void *path_ptrs_map;             // mmap base (page-aligned, may differ from
+    size_t path_ptrs_map_len;        // path_ptrs); 0 when read into malloc
 
     // Title pointer cache: array of entry indices in title order. Sourced from
     // the header title-pointer list (old/withns ZIMs) or, when that list is
@@ -116,6 +118,8 @@ struct zim_archive {
     uint32_t *title_ptrs;             // Array of entry indices (sorted by title)
     uint32_t title_ptr_count;        // Number of valid entries in title_ptrs
     bool title_ptrs_mmaped;
+    void *title_ptrs_map;            // mmap base (page-aligned); 0 when malloc'd
+    size_t title_ptrs_map_len;
 
     // Cluster pointer cache
     uint64_t *cluster_ptrs;           // Array of cluster offsets
@@ -173,5 +177,15 @@ uint32_t zim_find_title_prefix(zim_archive *archive, const char *prefix);
 
 // Read from file descriptor at offset (handles partial reads)
 ssize_t zim_pread(int fd, void *buf, size_t count, off_t offset);
+
+// Resolve the absolute file offset and size of an entry's content WITHOUT
+// reading it, but only when the content is stored uncompressed (cluster
+// compression type NONE) and so lives contiguously in the file. Returns true
+// and fills *file_off (absolute, includes archive->file_offset) and *size on
+// success; false for redirects, compressed clusters, or on error (the caller
+// must fall back to zim_get_content). Used to mmap big uncompressed blobs (the
+// Xapian indexes) instead of slurping multi-GB clusters into RAM.
+bool zim_get_content_extent(zim_archive *archive, const zim_entry *entry,
+                            uint64_t *file_off, size_t *size);
 
 #endif // LLAMAFILE_ZIM_ZIM_INTERNAL_H_

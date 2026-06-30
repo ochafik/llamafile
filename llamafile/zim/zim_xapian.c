@@ -65,8 +65,10 @@ static const unsigned char DOCLEN_KEY[2] = { 0x00, 0xe0 };
 
 struct zim_xapian {
     zim_archive *z;          // borrowed, must outlive us
-    unsigned char *blob;     // resident copy of the index (owned)
+    unsigned char *blob;     // the index bytes (mmap'd, else owned malloc)
     size_t blob_size;
+    void *map_base;          // mmap base to munmap (NULL when blob is malloc'd)
+    size_t map_len;
 
     uint32_t postlist_root;
     uint32_t docdata_root;
@@ -922,26 +924,42 @@ zim_xapian *zim_xapian_open(zim_archive *z, const char *entry_path) {
         zim_set_error("xapian: index entry '%s' not found", entry_path);
         return NULL;
     }
+    // The embedded Xapian indexes are large (multi-GB on the full English
+    // Wikipedia) and libzim stores them in UNCOMPRESSED clusters, so map them
+    // instead of slurping the whole cluster into RAM: open is O(1) and only the
+    // B-tree blocks a query actually walks fault in. Fall back to a full read
+    // for the (rare) compressed-index case.
     size_t n = 0;
-    void *buf = zim_get_content(z, &e, &n);
-    if (!buf) {
-        // zim_get_content already set an error
-        return NULL;
+    void *map_base = NULL;
+    size_t map_len = 0;
+    const void *blob = zim_map_content(z, &e, &n, &map_base, &map_len);
+    void *owned = NULL;  // non-NULL when we fell back to a malloc'd copy
+    if (!blob) {
+        owned = zim_get_content(z, &e, &n);
+        if (!owned) {
+            // zim_get_content already set an error
+            return NULL;
+        }
+        blob = owned;
     }
     if (n < GLASS_BLOCKSIZE) {
         zim_set_error("xapian: index '%s' too small (%zu bytes)", entry_path, n);
-        zim_free(buf);
+        if (owned) zim_free(owned);
+        else zim_unmap_content(map_base, map_len);
         return NULL;
     }
     zim_xapian *idx = (zim_xapian *)calloc(1, sizeof(*idx));
     if (!idx) {
         zim_set_error("xapian: out of memory");
-        zim_free(buf);
+        if (owned) zim_free(owned);
+        else zim_unmap_content(map_base, map_len);
         return NULL;
     }
     idx->z = z;
-    idx->blob = (unsigned char *)buf;
+    idx->blob = (unsigned char *)blob;
     idx->blob_size = n;
+    idx->map_base = map_base;  // NULL when owned (malloc) path was taken
+    idx->map_len = map_len;
     if (!parse_version(idx)) {
         zim_xapian_close(idx);
         return NULL;
@@ -952,8 +970,10 @@ zim_xapian *zim_xapian_open(zim_archive *z, const char *entry_path) {
 void zim_xapian_close(zim_xapian *idx) {
     if (!idx)
         return;
-    if (idx->blob)
-        zim_free(idx->blob);
+    if (idx->map_base)
+        zim_unmap_content(idx->map_base, idx->map_len);  // mmap'd blob
+    else if (idx->blob)
+        zim_free(idx->blob);                             // malloc'd fallback
     free(idx->doclen);
     free(idx);
 }

@@ -74,6 +74,33 @@ bool zim_read_at(zim_archive *archive, uint64_t offset, void *buf, size_t size) 
     return true;
 }
 
+// Memory-map [file_offset + pos, size) of the archive read-only. Handles page
+// alignment of the mmap offset: returns a pointer to the requested bytes and
+// sets *map_base/*map_len (which may cover a few extra bytes before `pos`) for a
+// later munmap. Returns NULL on failure. Hints MADV_RANDOM because every caller
+// (Xapian B-tree, pointer-array binary search) does scattered lookups, so OS
+// readahead would only waste I/O — important on the multi-GB indexes.
+static void *zim_mmap_at(zim_archive *archive, uint64_t pos, size_t size,
+                         void **map_base, size_t *map_len) {
+    long pg = sysconf(_SC_PAGESIZE);
+    if (pg <= 0) pg = 4096;
+    uint64_t fpos = archive->file_offset + pos;
+    uint64_t aligned = fpos & ~((uint64_t)pg - 1);
+    size_t delta = (size_t)(fpos - aligned);
+    if (size > SIZE_MAX - delta) return NULL;
+    size_t maplen = size + delta;
+    if (maplen == 0) return NULL;
+    void *base = mmap(NULL, maplen, PROT_READ, MAP_SHARED, archive->fd,
+                      (off_t)aligned);
+    if (base == MAP_FAILED) return NULL;
+#ifdef MADV_RANDOM
+    madvise(base, maplen, MADV_RANDOM);
+#endif
+    *map_base = base;
+    *map_len = maplen;
+    return (char *)base + delta;
+}
+
 // -----------------------------------------------------------------
 // Archive Opening/Closing
 // -----------------------------------------------------------------
@@ -165,7 +192,7 @@ void zim_close(zim_archive *archive) {
 
     if (archive->path_ptrs) {
         if (archive->path_ptrs_mmaped) {
-            // munmap
+            munmap(archive->path_ptrs_map, archive->path_ptrs_map_len);
         } else {
             free(archive->path_ptrs);
         }
@@ -173,7 +200,7 @@ void zim_close(zim_archive *archive) {
 
     if (archive->title_ptrs) {
         if (archive->title_ptrs_mmaped) {
-            // munmap
+            munmap(archive->title_ptrs_map, archive->title_ptrs_map_len);
         } else {
             free(archive->title_ptrs);
         }
@@ -344,6 +371,80 @@ const char *zim_get_mimetype(zim_archive *archive, const zim_entry *entry) {
 }
 
 // -----------------------------------------------------------------
+// Uncompressed-content extent + mmap (for the big embedded Xapian indexes)
+// -----------------------------------------------------------------
+
+bool zim_get_content_extent(zim_archive *archive, const zim_entry *entry,
+                            uint64_t *file_off, size_t *size) {
+    if (entry->is_redirect) return false;
+    if (!zim_load_cluster_ptrs(archive)) return false;
+    if (entry->cluster_idx >= archive->header.cluster_count) return false;
+
+    uint64_t coff = archive->cluster_ptrs[entry->cluster_idx];
+    uint64_t noff = (entry->cluster_idx + 1 < archive->header.cluster_count)
+                        ? archive->cluster_ptrs[entry->cluster_idx + 1]
+                        : archive->header.checksum_pos;
+    if (noff <= coff) return false;
+
+    // First byte of a cluster carries the compression type (low nibble) and the
+    // extended-offsets flag (0x10). We can only map clusters stored verbatim.
+    uint8_t hdr;
+    if (!zim_read_at(archive, coff, &hdr, 1)) return false;
+    if ((hdr & 0x0f) != ZIM_COMPRESSION_NONE) return false;
+    bool extended = (hdr & 0x10) != 0;
+
+    // The cluster payload (the blob-offset table + blobs) starts right after the
+    // 1-byte header. Blob offsets are measured from the payload start.
+    uint64_t payload = coff + 1;
+    size_t osz = extended ? 8 : 4;
+    uint64_t o0 = 0, o1 = 0;
+    if (extended) {
+        if (!zim_read_at(archive, payload + (uint64_t)entry->blob_idx * 8, &o0, 8))
+            return false;
+        if (!zim_read_at(archive, payload + (uint64_t)(entry->blob_idx + 1) * 8, &o1, 8))
+            return false;
+    } else {
+        uint32_t a = 0, b = 0;
+        if (!zim_read_at(archive, payload + (uint64_t)entry->blob_idx * 4, &a, 4))
+            return false;
+        if (!zim_read_at(archive, payload + (uint64_t)(entry->blob_idx + 1) * 4, &b, 4))
+            return false;
+        o0 = a;
+        o1 = b;
+    }
+    (void)osz;
+    if (o1 < o0) return false;
+    if (payload + o1 > noff) return false;  // would run past the cluster
+
+    *file_off = archive->file_offset + payload + o0;
+    *size = (size_t)(o1 - o0);
+    return true;
+}
+
+const void *zim_map_content(zim_archive *archive, const zim_entry *entry,
+                            size_t *size, void **map_base, size_t *map_len) {
+    *map_base = NULL;
+    *map_len = 0;
+    uint64_t file_off = 0;
+    size_t sz = 0;
+    if (!zim_get_content_extent(archive, entry, &file_off, &sz)) return NULL;
+    // zim_mmap_at takes a position relative to file_offset; file_off already
+    // includes it, so subtract it back out.
+    void *base = NULL;
+    size_t len = 0;
+    void *p = zim_mmap_at(archive, file_off - archive->file_offset, sz, &base, &len);
+    if (!p) return NULL;
+    *map_base = base;
+    *map_len = len;
+    *size = sz;
+    return p;
+}
+
+void zim_unmap_content(void *map_base, size_t map_len) {
+    if (map_base) munmap(map_base, map_len);
+}
+
+// -----------------------------------------------------------------
 // Pointer List Loading
 // -----------------------------------------------------------------
 
@@ -352,6 +453,21 @@ bool zim_load_path_ptrs(zim_archive *archive) {
 
     size_t count = archive->header.entry_count;
     size_t size = count * sizeof(uint64_t);
+
+    // Prefer mmap: the path list is binary-searched (a handful of pages touched
+    // per lookup), so mapping it is O(1) and keeps RAM tiny even on the full
+    // English Wikipedia (~218 MB list). The on-disk layout is little-endian
+    // uint64, matching the in-memory representation on cosmocc's targets.
+    void *base = NULL;
+    size_t len = 0;
+    void *p = zim_mmap_at(archive, archive->header.path_ptr_pos, size, &base, &len);
+    if (p) {
+        archive->path_ptrs = (uint64_t *)p;
+        archive->path_ptrs_map = base;
+        archive->path_ptrs_map_len = len;
+        archive->path_ptrs_mmaped = true;
+        return true;
+    }
 
     archive->path_ptrs = malloc(size);
     if (!archive->path_ptrs) {
@@ -424,6 +540,19 @@ bool zim_load_title_ptrs(zim_archive *archive) {
 
     size_t count = archive->header.entry_count;
     size_t size = count * sizeof(uint32_t);
+
+    // mmap the header title list (binary-searched, same rationale as path_ptrs).
+    void *base = NULL;
+    size_t len = 0;
+    void *p = zim_mmap_at(archive, pos, size, &base, &len);
+    if (p) {
+        archive->title_ptrs = (uint32_t *)p;
+        archive->title_ptrs_map = base;
+        archive->title_ptrs_map_len = len;
+        archive->title_ptrs_mmaped = true;
+        archive->title_ptr_count = (uint32_t)count;
+        return true;
+    }
 
     archive->title_ptrs = malloc(size);
     if (!archive->title_ptrs) {
