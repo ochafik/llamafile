@@ -156,6 +156,7 @@ LLAMAFILE_SRCS_CPP := \
 	llamafile/mcp_host.cpp \
 	llamafile/mcp_server.cpp \
 	llamafile/mtmd_video_cli.cpp \
+	llamafile/preload_kv.cpp \
 	llamafile/vlib_video/vlib_video_tool_parser.cpp \
 	llamafile/vlib_video/vlib_video_frame_filter.cpp \
 	llamafile/vlib_video/vlib_video_session.cpp \
@@ -372,6 +373,14 @@ o/$(MODE)/llamafile/agent_runtime_server.o: llamafile/agent_runtime_server.cpp
 # a route on the server's http context and uses server_http_res/server_http_req,
 # so it needs the server include path (server-http.h) like webcam_agent.cpp does.
 o/$(MODE)/llamafile/wiki_route.o: llamafile/wiki_route.cpp
+	@mkdir -p $(@D)
+	$(CXX) $(CXXFLAGS) $(LLAMAFILE_CPPFLAGS) $(LLAMAFILE_SERVER_INCS) -c -o $@ $<
+
+# preload_kv.cpp: bundle bootstrap (default-system injection + one-shot boot
+# restore of the precomputed /zip/system.kv over loopback HTTP). It uses
+# cpp-httplib + nlohmann/json like agent_loop.cpp, so it needs the server
+# include path.
+o/$(MODE)/llamafile/preload_kv.o: llamafile/preload_kv.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) $(LLAMAFILE_CPPFLAGS) $(LLAMAFILE_SERVER_INCS) -c -o $@ $<
 

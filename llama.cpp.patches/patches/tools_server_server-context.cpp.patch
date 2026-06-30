@@ -1,0 +1,28 @@
+diff --git a/llama.cpp/tools/server/server-context.cpp b/llama.cpp/tools/server/server-context.cpp
+index 531b106e5..2fe7c54f9 100644
+--- a/llama.cpp/tools/server/server-context.cpp
++++ b/llama.cpp/tools/server/server-context.cpp
+@@ -36,6 +36,13 @@
+ 
+ using json = nlohmann::ordered_json;
+ 
++// llamafile BUNDLE BOOTSTRAP: prepend the configured default system message to a
++// chat request that carries none, so a fresh chat starts with the EXACT
++// [tools+system] prefix its precomputed KV was built for. No-op unless
++// --default-system was set. Defined in llamafile/preload_kv.cpp and weak so the
++// standalone llama-server (which doesn't link it) degrades to a no-op.
++__attribute__((weak)) void llamafile_inject_default_system(nlohmann::ordered_json & body);
++
+ constexpr int HTTP_POLLING_SECONDS = 1;
+ 
+ static uint32_t server_n_outputs_max(const common_params & params) {
+@@ -4488,6 +4495,9 @@ void server_routes::init_routes() {
+         auto res = create_response();
+         std::vector<raw_buffer> files;
+         json body = json::parse(req.body);
++        if (llamafile_inject_default_system) {
++            llamafile_inject_default_system(body);
++        }
+         json body_parsed = oaicompat_chat_params_parse(
+             body,
+             meta->chat_params,

@@ -22,6 +22,7 @@
 #include "version.h"
 #include "zip.h"
 #include <cosmo.h>
+#include <third_party/zlib/zlib.h>
 #include <libc/assert.h>
 #include <libc/str/str.h>
 #include <errno.h>
@@ -63,6 +64,7 @@ struct llamafile {
     size_t position;
     void *mapping;
     size_t mapsize;
+    void *heap;  // inflated DEFLATE /zip entry (freed on close); content points here
     char fname[PATH_MAX];
     atomic_int refs;
 };
@@ -193,11 +195,11 @@ static struct llamafile *llamafile_open_zip(const char *prog, const char *fname,
     }
     strlcat(file->fname, "@", PATH_MAX);
     strlcat(file->fname, zip_name, PATH_MAX);
-    if (ZIP_CFILE_COMPRESSIONMETHOD(cdirdata + cdir_offset) != kZipCompressionNone) {
-        fprintf(
-            stderr,
-            "%s: error: weights stored in the zip executable can't be stored using compression\n",
-            file->fname);
+    int compression_method = ZIP_CFILE_COMPRESSIONMETHOD(cdirdata + cdir_offset);
+    if (compression_method != kZipCompressionNone &&
+        compression_method != kZipCompressionDeflate) {
+        fprintf(stderr, "%s: error: unsupported zip compression method %d\n", file->fname,
+                compression_method);
         goto Invalid;
     }
 
@@ -213,6 +215,60 @@ static struct llamafile *llamafile_open_zip(const char *prog, const char *fname,
         goto Invalid;
     }
     off += ZIP_LFILE_HDRSIZE(lfile);
+
+    // A DEFLATE-compressed entry (e.g. a precomputed system-prompt KV stored
+    // with plain `zip` rather than `zipalign -j0`) can't be mmap'd in place:
+    // inflate it into a heap buffer and serve reads from there. file->size is
+    // the compressed size here; swap in the uncompressed size + inflated bytes.
+    if (compression_method == kZipCompressionDeflate) {
+        int64_t usize = get_zip_cfile_uncompressed_size(cdirdata + cdir_offset);
+        if (usize < 0) {
+            fprintf(stderr, "%s: error: missing uncompressed size for deflated entry\n",
+                    file->fname);
+            goto Invalid;
+        }
+        uint8_t *comp = malloc(file->size ? file->size : 1);
+        void *inflated = malloc((size_t)usize ? (size_t)usize : 1);
+        if (!comp || !inflated) {
+            free(comp);
+            free(inflated);
+            fprintf(stderr, "%s: error: out of memory inflating deflated entry\n", file->fname);
+            goto Failure;
+        }
+        if (pread(fd, comp, file->size, off) != (long)file->size) {
+            free(comp);
+            free(inflated);
+            fprintf(stderr, "%s: error: failed to pread deflated entry\n", file->fname);
+            goto Failure;
+        }
+        z_stream zs;
+        memset(&zs, 0, sizeof(zs));
+        zs.next_in = comp;
+        zs.avail_in = (uInt)file->size;
+        zs.next_out = inflated;
+        zs.avail_out = (uInt)usize;
+        if (inflateInit2(&zs, -MAX_WBITS) != Z_OK) {
+            free(comp);
+            free(inflated);
+            fprintf(stderr, "%s: error: inflateInit2 failed\n", file->fname);
+            goto Failure;
+        }
+        int zrc = inflate(&zs, Z_FINISH);
+        inflateEnd(&zs);
+        free(comp);
+        if (zrc != Z_STREAM_END || zs.total_out != (uLong)usize) {
+            free(inflated);
+            fprintf(stderr, "%s: error: failed to inflate deflated entry (rc=%d)\n", file->fname,
+                    zrc);
+            goto Failure;
+        }
+        file->heap = inflated;
+        file->content = (char *)inflated;
+        file->size = (size_t)usize;
+        file->position = 0;
+        close(fd);
+        return file;
+    }
 
     // perform sanity check
     // mapping weights for apple metal gpu requires 16kb alignment
@@ -423,6 +479,9 @@ static void llamafile_close_impl(struct llamafile *file) {
         fclose(file->fp);
     if (file->mapping && file->mapping != MAP_FAILED) {
         munmap(file->mapping, file->mapsize);
+    }
+    if (file->heap) {
+        free(file->heap);
     }
     free(file);
 }

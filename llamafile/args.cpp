@@ -27,6 +27,11 @@
 // for the --session-dir flag (cross-TU, same pattern as the other hooks).
 void llamafile_runtime_set_session_root(const char * dir);
 
+// llamafile bundle bootstrap (preload_kv.cpp) — the --default-system FILE and
+// --preload-kv FILENAME setters for the precomputed-system-prompt KV preload.
+void llamafile_set_default_system_file(const char * path);
+void llamafile_preload_kv_set(const char * filename);
+
 #include <cosmo.h>  // GetProgramExecutableName
 
 #include <cstring>
@@ -263,6 +268,30 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
         if (strcmp(arg, "--session-dir") == 0) {
             if (i + 1 < argc) {
                 llamafile_runtime_set_session_root(argv[i + 1]);
+                ++i;
+            }
+            continue;
+        }
+
+        // --default-system FILE: inject the contents of FILE as the system
+        // message of any chat request that carries none (so a bundle's fresh
+        // chat begins with the EXACT system prefix its precomputed KV was built
+        // for). llamafile-owned; consumed here so it never reaches llama.cpp.
+        if (strcmp(arg, "--default-system") == 0) {
+            if (i + 1 < argc) {
+                llamafile_set_default_system_file(argv[i + 1]);
+                ++i;
+            }
+            continue;
+        }
+
+        // --preload-kv FILENAME: after the server is ready, restore FILENAME
+        // (relative to --slot-save-path, e.g. /zip/system.kv) into slot 0 so a
+        // bundled precomputed system-prompt KV is hot before the first request.
+        // llamafile-owned; consumed here so it never reaches llama.cpp.
+        if (strcmp(arg, "--preload-kv") == 0) {
+            if (i + 1 < argc) {
+                llamafile_preload_kv_set(argv[i + 1]);
                 ++i;
             }
             continue;
