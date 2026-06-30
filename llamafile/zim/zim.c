@@ -475,22 +475,34 @@ bool zim_read_dirent(zim_archive *archive, uint64_t offset, zim_entry *entry) {
         archive->entry_title_buf_size = buf_size;
     }
 
-    // Read path
-    if (!zim_read_at(archive, offset, archive->entry_path_buf, buf_size)) {
+    // Read path. Clamp the read window to the bytes remaining in the file: a
+    // dirent near EOF (e.g. the trailing dirents of a small libzim-built ZIM)
+    // has fewer than buf_size bytes left, and an unclamped 256-byte read would
+    // over-run EOF and fail the whole lookup (the path/title strings are
+    // null-terminated within the available bytes).
+    size_t path_avail = (offset < archive->file_size)
+                            ? (size_t)(archive->file_size - offset) : 0;
+    size_t path_read = path_avail < buf_size ? path_avail : buf_size;
+    if (path_read == 0 ||
+        !zim_read_at(archive, offset, archive->entry_path_buf, path_read)) {
         return false;
     }
-    path_len = strnlen(archive->entry_path_buf, buf_size);
-    if (path_len == buf_size) {
+    path_len = strnlen(archive->entry_path_buf, path_read);
+    if (path_len == path_read) {
         zim_set_error("path too long");
         return false;
     }
 
-    // Read title (comes after path's null terminator)
+    // Read title (comes after path's null terminator), same EOF clamp.
     offset += path_len + 1;
-    if (!zim_read_at(archive, offset, archive->entry_title_buf, buf_size)) {
+    size_t title_avail = (offset < archive->file_size)
+                             ? (size_t)(archive->file_size - offset) : 0;
+    size_t title_read = title_avail < buf_size ? title_avail : buf_size;
+    if (title_read > 0 &&
+        !zim_read_at(archive, offset, archive->entry_title_buf, title_read)) {
         return false;
     }
-    title_len = strnlen(archive->entry_title_buf, buf_size);
+    title_len = title_read ? strnlen(archive->entry_title_buf, title_read) : 0;
 
     entry->path = archive->entry_path_buf;
     entry->title = archive->entry_title_buf;
