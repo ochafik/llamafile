@@ -1,4 +1,5 @@
-diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
+diff --git a/llama.cpp/src/llama-mmap.cpp b/llama.cpp/src/llama-mmap.cpp
+index ed572da7f..6e66e2454 100644
 --- a/llama.cpp/src/llama-mmap.cpp
 +++ b/llama.cpp/src/llama-mmap.cpp
 @@ -4,6 +4,10 @@
@@ -81,7 +82,26 @@ diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
      }
  
      void read_aligned_chunk(void * dest, size_t size) {
-@@ -374,13 +406,20 @@ struct llama_file::impl {
+@@ -359,10 +391,18 @@ struct llama_file::impl {
+             return;
+         }
+         errno = 0;
++#ifdef COSMOCC
++        // [llamafile] the cosmo build opens via llamafile_open_gguf (lfile),
++        // not the libc FILE* fp, so writes must go through llamafile_write.
++        if (llamafile_write(lfile, ptr, len) == -1) {
++            throw std::runtime_error(format("write error: %s", strerror(errno)));
++        }
++#else
+         size_t ret = std::fwrite(ptr, len, 1, fp);
+         if (ret != 1) {
+             throw std::runtime_error(format("write error: %s", strerror(errno)));
+         }
++#endif
+     }
+ 
+     void write_u32(uint32_t val) const {
+@@ -374,13 +414,20 @@ struct llama_file::impl {
      }
  
      ~impl() {
@@ -102,7 +122,7 @@ diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
      std::string fname;
  #endif
  
-@@ -409,6 +448,10 @@ size_t llama_file::read_alignment() const { return pimpl->read_alignment(); }
+@@ -409,6 +456,10 @@ size_t llama_file::read_alignment() const { return pimpl->read_alignment(); }
  bool llama_file::has_direct_io() const { return pimpl->has_direct_io(); }
  
  int llama_file::file_id() const {
@@ -113,7 +133,7 @@ diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
  #ifdef _WIN32
      return _fileno(pimpl->fp);
  #else
-@@ -416,9 +459,10 @@ int llama_file::file_id() const {
+@@ -416,9 +467,10 @@ int llama_file::file_id() const {
          return pimpl->fd;
      }
  #if defined(fileno)
@@ -126,7 +146,7 @@ diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
  #endif
  #endif
  }
-@@ -436,14 +480,56 @@ uint32_t llama_file::read_u32() { return pimpl->read_u32(); }
+@@ -436,14 +488,56 @@ uint32_t llama_file::read_u32() { return pimpl->read_u32(); }
  void llama_file::write_raw(const void * ptr, size_t len) const { pimpl->write_raw(ptr, len); }
  void llama_file::write_u32(uint32_t val) const { pimpl->write_u32(val); }
  
@@ -183,7 +203,7 @@ diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
          int fd = file->file_id();
          int flags = MAP_SHARED;
          if (numa) { prefetch = 0; }
-@@ -488,6 +574,10 @@ struct llama_mmap::impl {
+@@ -488,6 +582,10 @@ struct llama_mmap::impl {
      }
  
      void unmap_fragment(size_t first, size_t last) {
@@ -194,7 +214,7 @@ diff --git a/src/llama-mmap.cpp b/src/llama-mmap.cpp
          int page_size = sysconf(_SC_PAGESIZE);
          align_range(&first, &last, page_size);
          size_t len = last - first;
-@@ -524,6 +614,14 @@ struct llama_mmap::impl {
+@@ -524,6 +622,14 @@ struct llama_mmap::impl {
      }
  
      ~impl() {

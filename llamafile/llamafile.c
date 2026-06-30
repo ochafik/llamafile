@@ -282,6 +282,13 @@ struct llamafile *llamafile_open_gguf(const char *fname, const char *mode) {
     if (startswith(fname, "/zip/"))
         return llamafile_open_zip(GetProgramExecutableName(), fname + 5, mode);
 
+    // [llamafile] write/append/update modes are never GGUF-container opens
+    // (e.g. llama_state_seq_save_file writing a KV/session cache). Skip the
+    // GGUF/zip auto-detection (which preads a magic on a write-only fd and
+    // fails with EBADF) and just use the plain filesystem.
+    if (strpbrk(mode, "wa+"))
+        return llamafile_open_file(fname, mode);
+
     // open from file or from our own executable if it doesn't exist
     struct llamafile *file;
     if (!(file = llamafile_open_file(fname, mode))) {
@@ -314,8 +321,16 @@ struct llamafile *llamafile_open_gguf(const char *fname, const char *mode) {
     }
 
     // otherwise assume user opened a .zip or .llamafile
-    llamafile_close(file);
-    return llamafile_open_zip(fname, 0, mode);
+    struct llamafile *zf = llamafile_open_zip(fname, 0, mode);
+    if (zf) {
+        llamafile_close(file);
+        return zf;
+    }
+    // [llamafile] not a GGUF and not a zip container: pass the plain file
+    // through unchanged (e.g. reading back a KV/session state file written by
+    // llama_state_seq_save_file). Rewind so the caller sees it from the start.
+    llamafile_seek(file, 0, SEEK_SET);
+    return file;
 }
 
 FILE *llamafile_fp(struct llamafile *file) {
