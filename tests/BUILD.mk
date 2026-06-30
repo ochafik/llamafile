@@ -190,31 +190,6 @@ o/$(MODE)/tests/wikidata_test: \
 	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # ==============================================================================
-# Test: wiki_fts_test (llamafile/wiki_fts builder+reader; over the tiny ZIM)
-# ==============================================================================
-#
-# Runs the real full-text builder (wiki_fts_build) over the committed v6 ZIM
-# fixture to produce a sidecar SQLite+FTS5 in a temp file, then drives the
-# reader: body-word search, a body: column-filtered MATCH (proving the BODY
-# index, not just titles), snippet() excerpt, implicit-AND, and missing-term ->
-# empty. Links the production wiki_fts.o + the ZIM reader lib + vendored sqlite3.
-
-WIKI_FTS_TEST_DEPS := \
-	o/$(MODE)/llamafile/wiki_fts.o \
-	o/$(MODE)/llamafile/zim/zim.a \
-	o/$(MODE)/third_party/sqlite/sqlite3.o
-
-o/$(MODE)/tests/wiki_fts_test.o: tests/wiki_fts_test.cpp
-	@mkdir -p $(@D)
-	$(CXX) $(CXXFLAGS) $(TESTS_CPPFLAGS) -c -o $@ $<
-
-o/$(MODE)/tests/wiki_fts_test: \
-		o/$(MODE)/tests/wiki_fts_test.o \
-		$(WIKI_FTS_TEST_DEPS)
-	@mkdir -p $(@D)
-	$(CXX) $(LDFLAGS) -o $@ $^ $(LDLIBS)
-
-# ==============================================================================
 # Test: path_jail_test (llamafile/path_jail.h — server-tools jail canonicalizer)
 # ==============================================================================
 #
@@ -334,7 +309,6 @@ o/$(MODE)/tests: \
 	o/$(MODE)/tests/zim_reader_test.runs \
 	o/$(MODE)/tests/zim_xapian_test.runs \
 	o/$(MODE)/tests/wikidata_test.runs \
-	o/$(MODE)/tests/wiki_fts_test.runs \
 	o/$(MODE)/tests/path_jail_test.runs \
 	o/$(MODE)/tests/agent_runtime_test.runs \
 	o/$(MODE)/tests/agent_runtime_sched_test.runs \

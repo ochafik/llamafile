@@ -43,6 +43,8 @@
 #include "server-http.h"
 #include "server-tools.h"  // server_tool, server_tools
 
+#include <snowball/include/libstemmer.h>  // vendored Snowball stemmers (UTF-8)
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -69,6 +71,7 @@ struct ZimHandle {
     zim_archive *z = nullptr;        // article reader
     zim_xapian * fulltext = nullptr; // X/fulltext/xapian (BM25 over bodies)
     zim_xapian * title = nullptr;    // X/title/xapian (BM25 over titles)
+    sb_stemmer * stemmer = nullptr;  // Snowball stemmer for this ZIM's language
     bool open_attempted = false;
     bool xapian_attempted = false;
 };
@@ -117,6 +120,71 @@ void ensure_zims_open() {
     }
 }
 
+// forward decl (defined below, near list_zims)
+std::string zim_metadata(zim_archive * z, const char * key);
+
+// Map a ZIM `M/Language` value to a vendored Snowball stemmer algorithm name,
+// or nullptr if there is no stemmer for that language (incl. CJK ja/zh/ko, which
+// are not stemmed — they just search unstemmed). ZIM language is normally an
+// ISO 639-3 code (e.g. "eng","fra","ara"); some archives use 639-1 ("en","fr").
+// A multi-language value ("eng,fra") is keyed on its first code. Only the
+// languages whose stemmers we actually vendor (UTF-8 set) are mapped.
+const char * snowball_algo_for_language(const std::string & raw) {
+    // take the first code, lowercase, keep ASCII letters only
+    std::string c;
+    for (char ch : raw) {
+        if (isalpha((unsigned char) ch)) c.push_back((char) tolower((unsigned char) ch));
+        else if (!c.empty()) break;  // stop at the first separator after a code
+    }
+    struct { const char * code; const char * algo; } map[] = {
+        // ISO 639-3                      // ISO 639-1
+        {"eng", "english"},   {"en", "english"},
+        {"fra", "french"},    {"fre", "french"},     {"fr", "french"},
+        {"spa", "spanish"},   {"es", "spanish"},
+        {"ara", "arabic"},    {"ar", "arabic"},
+        {"deu", "german"},    {"ger", "german"},     {"de", "german"},
+        {"ita", "italian"},   {"it", "italian"},
+        {"por", "portuguese"},{"pt", "portuguese"},
+        {"rus", "russian"},   {"ru", "russian"},
+        {"nld", "dutch"},     {"dut", "dutch"},      {"nl", "dutch"},
+        {"swe", "swedish"},   {"sv", "swedish"},
+        {"fin", "finnish"},   {"fi", "finnish"},
+        {"tur", "turkish"},   {"tr", "turkish"},
+        {"dan", "danish"},    {"da", "danish"},
+        {"nor", "norwegian"}, {"nob", "norwegian"},  {"nno", "norwegian"}, {"no", "norwegian"},
+        {"ron", "romanian"},  {"rum", "romanian"},   {"ro", "romanian"},
+        {"hun", "hungarian"}, {"hu", "hungarian"},
+        {"ell", "greek"},     {"gre", "greek"},      {"el", "greek"},
+        {"cat", "catalan"},   {"ca", "catalan"},
+        {"eus", "basque"},    {"baq", "basque"},     {"eu", "basque"},
+        {"hin", "hindi"},     {"hi", "hindi"},
+        {"ind", "indonesian"},{"id", "indonesian"},
+        {"gle", "irish"},     {"ga", "irish"},
+        {"lit", "lithuanian"},{"lt", "lithuanian"},
+        {"nep", "nepali"},    {"ne", "nepali"},
+        {"tam", "tamil"},     {"ta", "tamil"},
+    };
+    for (auto & m : map)
+        if (c == m.code) return m.algo;
+    return nullptr;  // unknown / CJK / unstemmed
+}
+
+// zim_xapian_stem_fn adapter: stem one lowercased UTF-8 term with the per-ZIM
+// Snowball stemmer (passed as ctx). Writes the BARE stem into buf. The stemmer
+// is stateful and NOT thread-safe; this runs under g_zim_mu (every search does).
+const char * zim_stem_cb(void * ctx, const char * term, char * buf, size_t buflen) {
+    sb_stemmer * st = (sb_stemmer *) ctx;
+    if (!st || !term) return nullptr;
+    int len = (int) strlen(term);
+    const sb_symbol * out = sb_stemmer_stem(st, (const sb_symbol *) term, len);
+    if (!out) return nullptr;
+    int olen = sb_stemmer_length(st);
+    if (olen <= 0 || (size_t) olen + 1 > buflen) return nullptr;
+    memcpy(buf, out, (size_t) olen);
+    buf[olen] = '\0';
+    return buf;
+}
+
 // Lazily open the Xapian indexes for one ZIM (tolerant: a ZIM without an index
 // just keeps null pointers and falls back to the title listing). Caller holds
 // g_zim_mu.
@@ -129,6 +197,25 @@ void ensure_xapian(ZimHandle & h) {
         fprintf(stderr, "zim[%s]: no X/fulltext/xapian index (%s); "
                         "falling back to title search\n",
                 h.id.c_str(), zim_xapian_error());
+    }
+    // Attach a Snowball stemmer keyed on the ZIM's declared language so a query
+    // term also matches its morphological variants (STEM_SOME). Languages with
+    // no vendored stemmer (incl. CJK) stay unstemmed.
+    if (h.fulltext) {
+        std::string lang = zim_metadata(h.z, "Language");
+        const char * algo = snowball_algo_for_language(lang);
+        if (algo) {
+            h.stemmer = sb_stemmer_new(algo, "UTF_8");
+            if (h.stemmer) {
+                zim_xapian_set_stemmer(h.fulltext, zim_stem_cb, h.stemmer);
+                fprintf(stderr, "zim[%s]: stemming queries with the %s "
+                                "Snowball stemmer (language '%s')\n",
+                        h.id.c_str(), algo, lang.c_str());
+            } else {
+                fprintf(stderr, "zim[%s]: Snowball '%s' stemmer unavailable; "
+                                "searching unstemmed\n", h.id.c_str(), algo);
+            }
+        }
     }
 }
 

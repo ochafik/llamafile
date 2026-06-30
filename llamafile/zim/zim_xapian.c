@@ -80,6 +80,10 @@ struct zim_xapian {
     uint32_t doclen_cap;     // allocated length (entries)
     uint32_t doclen_max;     // highest docid filled
     int doclen_ready;        // 0 = not yet built, 1 = built, -1 = failed
+
+    // Optional Snowball stemmer hook (STEM_SOME query expansion). NULL = off.
+    zim_xapian_stem_fn stem;
+    void *stem_ctx;
 };
 
 // =====================================================================
@@ -851,6 +855,7 @@ struct score_ctx {
     float *score;      // indexed by docid
     double idf;
     double avgdl;
+    int maxmerge;      // 0 = accumulate (+=), 1 = keep the max (OR same concept)
 };
 
 static void score_posting(void *vctx, uint32_t did, uint32_t wdf) {
@@ -864,7 +869,31 @@ static void score_posting(void *vctx, uint32_t did, uint32_t wdf) {
     double denom = (double)wdf + BM25_K1 * (1.0 - BM25_B + BM25_B * dl / sc->avgdl);
     if (denom <= 0.0)
         return;
-    sc->score[did] += (float)(sc->idf * ((double)wdf * (BM25_K1 + 1.0)) / denom);
+    float contrib = (float)(sc->idf * ((double)wdf * (BM25_K1 + 1.0)) / denom);
+    if (sc->maxmerge) {
+        if (contrib > sc->score[did])
+            sc->score[did] = contrib;     // raw vs Z-stem: count the concept once
+    } else {
+        sc->score[did] += contrib;        // distinct query terms: BM25 OR sum
+    }
+}
+
+// Score one term's full postlist into `target` (BM25 with this index's stats).
+// `maxmerge` controls how postings combine into `target` (see score_posting).
+// No-op (term absent) leaves `target` untouched. `N` is the doccount.
+static void score_term_into(zim_xapian *idx, const unsigned char *term, int tlen,
+                            double N, float *target, int maxmerge) {
+    uint64_t tf = 0;
+    if (!iterate_postlist(idx, term, tlen, &tf, NULL, NULL) || tf == 0)
+        return;
+    struct score_ctx sc;
+    sc.idx = idx;
+    sc.score = target;
+    sc.avgdl = idx->avg_doclen > 0 ? idx->avg_doclen : 1.0;
+    // Okapi BM25 IDF with the +1 guard (Lucene-style), always positive.
+    sc.idf = log(1.0 + (N - (double)tf + 0.5) / ((double)tf + 0.5));
+    sc.maxmerge = maxmerge;
+    iterate_postlist(idx, term, tlen, &tf, score_posting, &sc);
 }
 
 // =====================================================================
@@ -917,6 +946,14 @@ void zim_xapian_close(zim_xapian *idx) {
     free(idx);
 }
 
+void zim_xapian_set_stemmer(zim_xapian *idx, zim_xapian_stem_fn stem,
+                            void *ctx) {
+    if (!idx)
+        return;
+    idx->stem = stem;
+    idx->stem_ctx = ctx;
+}
+
 uint32_t zim_xapian_doccount(const zim_xapian *idx) {
     return idx ? idx->doccount : 0;
 }
@@ -958,6 +995,20 @@ int zim_xapian_search(zim_xapian *idx, const char *query, int limit,
         return -1;
     }
 
+    // When stemming, OR(raw, "Z"+stem) for one query term is max-merged into a
+    // per-term scratch buffer (so a doc with BOTH forms is counted once), then
+    // summed into the global score. Without a stemmer we score straight into the
+    // global buffer (unchanged behaviour).
+    float *tscore = NULL;
+    if (idx->stem) {
+        tscore = (float *)calloc(nscore, sizeof(float));
+        if (!tscore) {
+            free(score);
+            zim_set_error("xapian: out of memory for scores");
+            return -1;
+        }
+    }
+
     double N = (double)idx->doccount;
     for (int t = 0; t < nterms; t++) {
         // Deduplicate repeated query terms (their IDF would otherwise double).
@@ -969,22 +1020,55 @@ int zim_xapian_search(zim_xapian *idx, const char *query, int limit,
             }
         if (dup)
             continue;
-        uint64_t tf = 0;
-        struct score_ctx sc;
-        sc.idx = idx;
-        sc.score = score;
-        sc.avgdl = idx->avg_doclen > 0 ? idx->avg_doclen : 1.0;
-        // First pass: get document frequency so IDF is known before scoring.
-        if (!iterate_postlist(idx, (const unsigned char *)terms[t],
-                              (int)strlen(terms[t]), &tf, NULL, NULL))
+        int tlen = (int)strlen(terms[t]);
+
+        if (!idx->stem) {
+            // No stemmer: score the raw term straight into the global buffer.
+            score_term_into(idx, (const unsigned char *)terms[t], tlen, N, score,
+                            0);
             continue;
-        if (tf == 0)
-            continue;
-        // Okapi BM25 IDF with the +1 guard (Lucene-style), always positive.
-        sc.idf = log(1.0 + (N - (double)tf + 0.5) / ((double)tf + 0.5));
-        iterate_postlist(idx, (const unsigned char *)terms[t],
-                         (int)strlen(terms[t]), &tf, score_posting, &sc);
+        }
+
+        // OR(raw, stem, "Z"+stem) into the scratch buffer, max-merged so a doc
+        // holding more than one of the forms is counted once.
+        //
+        // We probe BOTH stem forms because ZIM archives index full text with
+        // either Xapian stemming strategy:
+        //   * STEM_SOME (default): stores the unstemmed term AND a "Z"+stem term
+        //     -> raw matches the surface word, "Z"+stem matches variants.
+        //   * STEM_ALL: stores ONLY the bare (unprefixed) stem
+        //     -> the bare stem matches; raw only hits when it equals its stem.
+        // Querying raw + bare-stem + "Z"+stem matches either layout; the form
+        // that is absent simply contributes an empty postlist.
+        score_term_into(idx, (const unsigned char *)terms[t], tlen, N, tscore, 1);
+        char stembuf[128];
+        const char *st = idx->stem(idx->stem_ctx, terms[t], stembuf,
+                                   sizeof(stembuf));
+        if (st && *st) {
+            size_t sl = strlen(st);
+            if (sl > 126)
+                sl = 126;
+            // bare stem (STEM_ALL layout), unless identical to the raw term
+            if (!(sl == (size_t)tlen && memcmp(st, terms[t], sl) == 0))
+                score_term_into(idx, (const unsigned char *)st, (int)sl, N,
+                                tscore, 1);
+            // "Z"+stem (STEM_SOME layout)
+            char zterm[130];
+            zterm[0] = 'Z';
+            memcpy(zterm + 1, st, sl);
+            zterm[1 + sl] = '\0';
+            score_term_into(idx, (const unsigned char *)zterm, (int)(1 + sl), N,
+                            tscore, 1);
+        }
+        // Fold the per-term max into the global sum and clear the scratch.
+        for (uint32_t d = 0; d < nscore; d++) {
+            if (tscore[d] > 0.0f) {
+                score[d] += tscore[d];
+                tscore[d] = 0.0f;
+            }
+        }
     }
+    free(tscore);
 
     // Partial top-`limit` selection over the score array.
     typedef struct {

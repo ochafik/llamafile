@@ -22,7 +22,6 @@
 //   llamafile wikipedia search <query> [--zim PATH] [--limit N]
 //   llamafile wikipedia get    <title|path> [--zim PATH]
 
-#include "wiki_fts.h"
 #include "zim/zim.h"
 
 #include <cstdio>
@@ -43,28 +42,20 @@ void wiki_cli_usage(FILE * f) {
         "usage:\n"
         "  llamafile wikipedia search   <query> [--zim PATH] [--limit N]\n"
         "  llamafile wikipedia get      <title|path> [--zim PATH]\n"
-        "  llamafile wikipedia index    <zim> <out.sqlite>\n"
-        "  llamafile wikipedia fulltext <query> --wiki-fts <db> [--limit N]\n"
         "\n"
         "subcommands:\n"
-        "  search    title search via the ZIM's own index (titles only)\n"
+        "  search    ranked full-text search via the ZIM's own embedded Xapian\n"
+        "            BM25 index (article bodies), with title-match boosting\n"
         "  get       print one article's full plain text\n"
-        "  index     build a full-text (FTS5) sidecar SQLite from a ZIM, indexing\n"
-        "            article BODIES so prose words become searchable\n"
-        "  fulltext  full-text search over a sidecar built by `index` (bodies),\n"
-        "            returning {path, title, snippet} hits\n"
         "\n"
         "options:\n"
         "  --zim PATH       path to a .zim archive (default: $LLAMAFILE_ZIM or a\n"
         "                   bundled /zip/wikipedia.zim if present)\n"
-        "  --wiki-fts PATH  path to a full-text sidecar (default: $LLAMAFILE_WIKI_FTS)\n"
         "  --limit N        max search results (default 5)\n"
         "\n"
         "examples:\n"
         "  llamafile wikipedia search \"Eiffel Tower\" --zim simplewiki.zim\n"
-        "  llamafile wikipedia get \"Eiffel Tower\" --zim simplewiki.zim\n"
-        "  llamafile wikipedia index simplewiki.zim simplewiki-fts.sqlite\n"
-        "  llamafile wikipedia fulltext \"wrought iron lattice\" --wiki-fts simplewiki-fts.sqlite\n");
+        "  llamafile wikipedia get \"Eiffel Tower\" --zim simplewiki.zim\n");
 }
 
 // Collapse whitespace runs to single spaces; trim. Returns a std::string.
@@ -106,83 +97,10 @@ int wiki_cli_main(int argc, char ** argv) {
         wiki_cli_usage(sub ? stdout : stderr);
         return sub ? 0 : 2;
     }
-    if (strcmp(sub, "search") != 0 && strcmp(sub, "get") != 0 &&
-        strcmp(sub, "index") != 0 && strcmp(sub, "fulltext") != 0) {
+    if (strcmp(sub, "search") != 0 && strcmp(sub, "get") != 0) {
         fprintf(stderr, "error: unknown subcommand '%s'\n\n", sub);
         wiki_cli_usage(stderr);
         return 2;
-    }
-
-    // `index <zim> <out.sqlite>`: build a full-text sidecar from a ZIM. No
-    // model/server; needs only the ZIM reader + the vendored sqlite.
-    if (!strcmp(sub, "index")) {
-        const char * in_zim = nullptr;
-        const char * out_db = nullptr;
-        for (int i = 3; i < argc; i++) {
-            if (!in_zim)       in_zim = argv[i];
-            else if (!out_db)  out_db = argv[i];
-        }
-        if (!in_zim || !out_db) {
-            fprintf(stderr, "error: index needs <zim> <out.sqlite>\n\n");
-            wiki_cli_usage(stderr);
-            return 2;
-        }
-        fprintf(stderr, "building full-text sidecar: %s -> %s\n", in_zim, out_db);
-        if (wiki_fts_build(in_zim, out_db) != 0) {
-            fprintf(stderr, "error: %s\n", wiki_fts_error());
-            return 1;
-        }
-        fprintf(stderr, "done: %s\n", out_db);
-        return 0;
-    }
-
-    // `fulltext <query> --wiki-fts <db>`: full-text search over a sidecar.
-    if (!strcmp(sub, "fulltext")) {
-        const char * fts_path = nullptr;
-        int limit = 5;
-        std::string query;
-        for (int i = 3; i < argc; i++) {
-            if (!strcmp(argv[i], "--wiki-fts") && i + 1 < argc) {
-                fts_path = argv[++i];
-            } else if (!strcmp(argv[i], "--limit") && i + 1 < argc) {
-                limit = atoi(argv[++i]);
-            } else {
-                if (!query.empty()) query.push_back(' ');
-                query += argv[i];
-            }
-        }
-        if (query.empty()) {
-            fprintf(stderr, "error: missing <query>\n\n");
-            wiki_cli_usage(stderr);
-            return 2;
-        }
-        if (limit < 1) limit = 1;
-        if (!fts_path) fts_path = getenv("LLAMAFILE_WIKI_FTS");
-        if (!fts_path) {
-            fprintf(stderr, "error: no full-text sidecar. Pass --wiki-fts PATH "
-                            "(or set $LLAMAFILE_WIKI_FTS). Build one with "
-                            "`llamafile wikipedia index <zim> <out.sqlite>`.\n");
-            return 1;
-        }
-        wiki_fts_store * s = wiki_fts_open(fts_path);
-        if (!s) {
-            fprintf(stderr, "error: %s\n", wiki_fts_error());
-            return 1;
-        }
-        std::vector<wiki_fts_hit> hits = wiki_fulltext_search(s, query, limit);
-        int rc = 0;
-        if (hits.empty()) {
-            fprintf(stderr, "no results for \"%s\"\n", query.c_str());
-            rc = 1;
-        } else {
-            int i = 0;
-            for (const auto & h : hits) {
-                printf("%d. %s  [%s]\n", ++i, h.title.c_str(), h.path.c_str());
-                if (!h.snippet.empty()) printf("   %s\n", h.snippet.c_str());
-            }
-        }
-        wiki_fts_close(s);
-        return rc;
     }
 
     const char * zim_path = nullptr;

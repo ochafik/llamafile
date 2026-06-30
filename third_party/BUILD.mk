@@ -1,5 +1,6 @@
 include third_party/double-conversion/BUILD.mk
 include third_party/mbedtls/BUILD.mk
+include third_party/snowball/BUILD.mk
 include third_party/sqlite/BUILD.mk
 include third_party/stb/BUILD.mk
 
@@ -7,6 +8,7 @@ include third_party/stb/BUILD.mk
 o/$(MODE)/third_party: \
 		o/$(MODE)/third_party/double-conversion \
 		o/$(MODE)/third_party/mbedtls \
+		o/$(MODE)/third_party/snowball \
 		o/$(MODE)/third_party/sqlite \
 		o/$(MODE)/third_party/stb \
 		o/$(MODE)/third_party/zipalign

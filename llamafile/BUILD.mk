@@ -163,7 +163,6 @@ LLAMAFILE_SRCS_CPP := \
 	llamafile/wiki_route.cpp \
 	llamafile/string.cpp \
 	llamafile/wiki_cli.cpp \
-	llamafile/wiki_fts.cpp \
 	llamafile/wikidata.cpp \
 	llamafile/wikidata_cli.cpp \
 	llamafile/xterm.cpp \
@@ -320,6 +319,7 @@ LLAMAFILE_DEPS = \
 	$(LLAMAFILE_AGENT_UI_ASSETS) \
 	$(TINYBLAS_CPU_OBJS) \
 	$(LLAMAFILE_ZIM_OBJS) \
+	$(THIRD_PARTY_SNOWBALL_OBJS) \
 	o/$(MODE)/third_party/sqlite/sqlite3.o \
 	o/$(MODE)/third_party/stb/stb_image_resize2.o
 

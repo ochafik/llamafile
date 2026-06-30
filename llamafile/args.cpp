@@ -108,7 +108,7 @@ static bool is_llamafile_flag(const char* arg) {
 }
 
 // Build the `--mcp` spec that self-spawns this same binary as an `mcp-server`
-// bridge (for the first-class --zim/--wikidata/--wiki-fts --server flags). Two
+// bridge (for the first-class --zim/--wikidata --server flags). Two
 // robustness requirements, both matching the test-harness convention
 // (tests/integration/runtime_mesh_test.py, tests/eval/agentic_flows.py):
 //   * Resolve the executable via GetProgramExecutableName(), NOT argv[0]: under
@@ -226,20 +226,6 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
         if (strcmp(arg, "--wikidata") == 0) {
             if (i + 1 < argc) {
                 llamafile_mcp_add_server(self_mcp_server_spec("--wikidata", argv[i + 1]));
-                ++i;
-            }
-            continue;
-        }
-
-        // --wiki-fts PATH: enable the offline Wikipedia full-text tool
-        // (wiki_fulltext_search, article bodies) in --server mode by bridging it
-        // in via our own mcp-server subprocess (same path as a manual
-        // `--mcp 'llamafile mcp-server --wiki-fts …'`), so it lands in the /tools
-        // registry alongside the wiki_* title tools. Consumed here so it never
-        // reaches llama.cpp's parser.
-        if (strcmp(arg, "--wiki-fts") == 0) {
-            if (i + 1 < argc) {
-                llamafile_mcp_add_server(self_mcp_server_spec("--wiki-fts", argv[i + 1]));
                 ++i;
             }
             continue;

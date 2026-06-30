@@ -63,8 +63,27 @@ zim_xapian *zim_xapian_open(zim_archive *z, const char *entry_path);
 // `*hits_out` (newly allocated, sorted by descending score). Returns the number
 // of hits (0..limit), or -1 on error. The caller must release the result with
 // zim_xapian_free_hits().
+//
+// When a stemmer hook is attached (zim_xapian_set_stemmer), each query term ALSO
+// matches its "Z"+stem form, so morphological variants are found (e.g.
+// "running" surfaces docs about "run"/"runs"). The two forms are OR-ed and the
+// stronger (rarer) one wins per document, so a doc carrying both forms is not
+// double-counted — matching Xapian's QueryParser STEM_SOME semantics.
 int zim_xapian_search(zim_xapian *idx, const char *query, int limit,
                       zim_xapian_hit **hits_out);
+
+// Optional Snowball stemmer hook. When set, zim_xapian_search expands each
+// lowercased query term to OR(raw, "Z"+stem). `stem` is called with a
+// NUL-terminated lowercased UTF-8 term and must write the BARE stem (no "Z"
+// prefix — the reader adds it) into `buf` (NUL-terminated) and return `buf`, or
+// return NULL to leave that term unstemmed. `ctx` is passed through unchanged
+// (e.g. an sb_stemmer*). The hook is invoked synchronously from within
+// zim_xapian_search; the caller owns any locking (Snowball stemmers are not
+// thread-safe). Pass stem=NULL to disable (the default). ZIMs whose language
+// has no Snowball stemmer (incl. CJK) simply leave this unset = unstemmed.
+typedef const char *(*zim_xapian_stem_fn)(void *ctx, const char *term,
+                                          char *buf, size_t buflen);
+void zim_xapian_set_stemmer(zim_xapian *idx, zim_xapian_stem_fn stem, void *ctx);
 
 // Free a hit array returned by zim_xapian_search.
 void zim_xapian_free_hits(zim_xapian_hit *hits, int count);
