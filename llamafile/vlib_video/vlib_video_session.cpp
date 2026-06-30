@@ -12,7 +12,7 @@
 //   7. generate up to max_tool_tokens; stop on </tool_call>, EOS, or budget.
 //   8. parse generated text -> tool_call.
 //   9. if action == do_nothing/ignore_frame (sole):
-//          llama_memory_seq_rm(rewind_floor, -1); n_past = rewind_floor;
+//          llama_memory_seq_rm_attn(rewind_floor, -1); n_past = rewind_floor;
 //          pop the cumulative grid_thw entry we pushed for this frame.
 //      else (speak / note / other): ref = cur; n_past stays advanced.
 //
@@ -20,9 +20,9 @@
 // {t=1,h,w} entry to a running cumulative stack; ignore_frame must pop the EXACT
 // entry it pushed or every subsequent frame desyncs. llama.cpp computes RoPE
 // per-token from explicit batch positions, so trimming KV via
-// llama_memory_seq_rm + restoring n_past is sufficient (no internal rope-delta
-// accumulator to resync). Recurrent state is intentionally NOT rolled back
-// (MLX ghost-memory semantic).
+// llama_memory_seq_rm_attn + restoring n_past is sufficient (no internal
+// rope-delta accumulator to resync). Recurrent state is intentionally NOT rolled
+// back — seq_rm_attn drops only the attention KV (MLX ghost-memory semantic).
 
 #include "vlib_video_session.h"
 
@@ -190,19 +190,23 @@ public:
         const bool is_ignore = (name == "do_nothing" || name == "ignore_frame");
         if (is_ignore) {
             result.kind = ACTION_DO_NOTHING;
-            // Trim the attention KV back to the pre-frame mark so the ignored
-            // frame leaves no trace. On hybrid (attention+recurrent) models
-            // llama_memory_seq_rm tries the recurrent sub-cache first and, if a
-            // frame-sized rollback exceeds its per-token snapshot depth, REFUSES
-            // and leaves BOTH caches unmutated (returns false). In that case we
-            // intentionally KEEP the frame in KV rather than desync M-RoPE
-            // positions on the next frame — the boring frame stays (a stronger
-            // form of the intended "ghost memory"). The pure-attention case
-            // (e.g. Qwen2.5-VL) trims cleanly. A public "trim attention only"
-            // hook would let hybrid models drop the attention trace too — see
-            // the port report (would require a llama.cpp submodule patch).
+            // Trim the ATTENTION KV back to the pre-frame mark so the ignored
+            // frame leaves no attention trace. We use llama_memory_seq_rm_attn
+            // (an attention-only variant of seq_rm; see the llama.cpp submodule
+            // commit on branch llamafile-2026-ghostkv). On hybrid
+            // (attention+recurrent) models — e.g. Qwen3.5/3.6 gated-delta-net —
+            // a plain llama_memory_seq_rm tries to roll back the recurrent
+            // sub-cache first and, because a frame-sized rollback exceeds the
+            // per-token recurrent snapshot depth (n_rs_seq), REFUSES and leaves
+            // BOTH caches unmutated (returns false) — the whole frame is kept.
+            // seq_rm_attn instead drops only the attention KV and KEEPS the
+            // recurrent state, so the boring frame leaves just a faint trace in
+            // the recurrent memory (the intended "ghost memory" / MLX watchdawg
+            // semantic) while attention positions stay contiguous. On
+            // pure-attention models (e.g. Qwen2.5-VL) it is identical to
+            // llama_memory_seq_rm, so behaviour there is unchanged.
             llama_memory_t mem = llama_get_memory(m_lctx);
-            bool removed = mem ? llama_memory_seq_rm(mem, m_seq_id, rewind_floor, -1) : false;
+            bool removed = mem ? llama_memory_seq_rm_attn(mem, m_seq_id, rewind_floor, -1) : false;
             if (removed) {
                 m_n_past = rewind_floor;
                 if (m_pending_pop_grid && !m_grid_thw.empty()) {
@@ -288,15 +292,17 @@ public:
     void rewind_last() override {
         if (m_pending_rewind_floor < 0) return;
         llama_memory_t mem = llama_get_memory(m_lctx);
-        bool removed = mem ? llama_memory_seq_rm(mem, m_seq_id, m_pending_rewind_floor, -1) : false;
+        bool removed = mem ? llama_memory_seq_rm_attn(mem, m_seq_id, m_pending_rewind_floor, -1) : false;
         if (removed) {
             m_n_past = m_pending_rewind_floor;
             if (m_pending_pop_grid && !m_grid_thw.empty()) {
                 m_grid_thw.pop_back();
             }
         }
-        // else: hybrid model refused the partial rollback; nothing was mutated,
+        // else: attention trim failed (no memory / unexpected); nothing mutated,
         // so leave m_n_past/grid at their post-frame values (see process_frame).
+        // seq_rm_attn keeps the recurrent state intact on hybrid models, so it no
+        // longer refuses a frame-sized attention rollback the way seq_rm did.
         m_pending_pop_grid     = false;
         m_pending_rewind_floor = -1;
     }
