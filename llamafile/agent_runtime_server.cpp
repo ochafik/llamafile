@@ -191,12 +191,12 @@ struct Role { std::string system; std::vector<std::string> allow; };
 
 Role role_for(const std::string & role) {
     static const std::vector<std::string> research_tools =
-        {"wiki_search", "wiki_get_article", "wiki_*", "wikidata_*",
-         "browser_*", "web_fetch", "code_run_js", "send_message", "list_agents",
-         "wait", "poll_until", "schedule"};
+        {"zim_search", "zim_get_article", "zim_open", "list_zims", "zim_*",
+         "wikidata_*", "browser_*", "web_fetch", "code_run_js", "send_message",
+         "list_agents", "wait", "poll_until", "schedule"};
     if (role == "researcher")
         return {"You are a RESEARCHER sub-agent. Use the available tools "
-                "(wiki_search, wiki_get_article, wikidata_*) to gather facts that "
+                "(zim_search, zim_get_article, list_zims, wikidata_*) to gather facts that "
                 "answer the task. Search, read the most relevant result, then ANSWER. "
                 "Do not repeat an identical tool call. When you have the facts, stop "
                 "calling tools and write a short factual summary citing its source "
@@ -797,7 +797,7 @@ void seed_orchestrator(Runtime & rt, const std::string & goal) {
     std::string err;
     std::vector<std::string> orch_tools = {"spawn_agent", "send_message", "await", "list_agents",
                                            "wait", "poll_until", "schedule",
-                                           "wiki_*", "wikidata_*", "code_run_js"};
+                                           "zim_*", "list_zims", "wikidata_*", "code_run_js"};
     rt.spawn("", "orchestrator", "orchestrator", orchestrator_prompt(), goal, orch_tools, err);
 }
 

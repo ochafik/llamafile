@@ -297,10 +297,10 @@ json tool_wiki_open(const json & args) {
 
 void register_wiki_tools() {
     g_tools.push_back(Tool{
-        "wiki_search",
+        "zim_search",
         "Search the offline Wikipedia (ZIM archive) for articles matching a "
         "query. Returns a JSON list of {title, path, snippet} hits. Use the "
-        "returned title or path with wiki_get_article to read the full article.",
+        "returned title or path with zim_get_article to read the full article.",
         json{
             { "type", "object" },
             { "properties", json{
@@ -315,9 +315,9 @@ void register_wiki_tools() {
     });
 
     g_tools.push_back(Tool{
-        "wiki_get_article",
+        "zim_get_article",
         "Fetch a Wikipedia article from the offline ZIM archive, by title or path "
-        "(as returned by wiki_search). Returns clean Markdown by default "
+        "(as returned by zim_search). Returns clean Markdown by default "
         "(headings, lists, bold/italic and [links](/wiki/...) you can click "
         "through), or pass format:\"text\" for the cheaper flattened plain text. "
         "Redirects are resolved automatically.",
@@ -336,7 +336,7 @@ void register_wiki_tools() {
     });
 
     g_tools.push_back(Tool{
-        "wiki_open",
+        "zim_open",
         "Resolve a Wikipedia article (by title or path) to a clickable URL into "
         "the offline encyclopedia browser served by this llamafile. Returns "
         "{url, title, path} where url is \"/wiki/<path>\" — hand it to the user so "
@@ -388,12 +388,12 @@ json tool_wiki_fulltext_search(const json & args) {
 
 void register_wiki_fts_tools() {
     g_tools.push_back(Tool{
-        "wiki_fulltext_search",
+        "zim_fulltext_search",
         "Full-text search the offline Wikipedia over article BODIES (not just "
-        "titles, as wiki_search does). Finds articles by words that appear inside "
+        "titles, as zim_search does). Finds articles by words that appear inside "
         "the prose. Returns a JSON list of {title, path, snippet} hits, where "
         "snippet is a context excerpt with matches in [brackets]. Pass the "
-        "returned title or path to wiki_get_article to read the full article. "
+        "returned title or path to zim_get_article to read the full article. "
         "Plain words match as an implicit AND; you may also issue an FTS5 boolean "
         "expression (e.g. \"lattice OR truss\", \"body:eiffel\").",
         json{
@@ -668,7 +668,7 @@ void mcp_server_usage(FILE * f) {
     fprintf(f,
         "llamafile mcp-server - run a Model Context Protocol server over stdio\n"
         "\n"
-        "Exposes the embedded-Wikipedia tools (wiki_search, wiki_get_article) to\n"
+        "Exposes the embedded-Wikipedia tools (zim_search, zim_get_article) to\n"
         "MCP clients (Claude Code, opencode, Cursor) over newline-delimited\n"
         "JSON-RPC 2.0 on stdin/stdout.\n"
         "\n"
@@ -678,12 +678,12 @@ void mcp_server_usage(FILE * f) {
         "options:\n"
         "  --zim PATH         path to a .zim archive (default: $LLAMAFILE_ZIM or a\n"
         "                     bundled /zip/wikipedia.zim if present); enables\n"
-        "                     wiki_search / wiki_get_article.\n"
+        "                     zim_search / zim_get_article.\n"
         "  --wikidata PATH    path to a Wikidata .sqlite store (default:\n"
         "                     $LLAMAFILE_WIKIDATA); enables wikidata_search /\n"
         "                     wikidata_entity / wikidata_property.\n"
         "  --wiki-fts PATH    path to a Wikipedia full-text sidecar (default:\n"
-        "                     $LLAMAFILE_WIKI_FTS); enables wiki_fulltext_search\n"
+        "                     $LLAMAFILE_WIKI_FTS); enables zim_fulltext_search\n"
         "                     (search article bodies, not just titles). Build one\n"
         "                     with `llamafile wikipedia index <zim> <out.sqlite>`.\n"
         "  --browser          expose the browser_* tools AND the code interpreter\n"

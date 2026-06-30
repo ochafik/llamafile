@@ -14,9 +14,9 @@
 # and drives newline-delimited JSON-RPC 2.0 over stdin/stdout, asserting:
 #
 #   * initialize            -> result.protocolVersion present
-#   * tools/list            -> wiki_search AND wiki_get_article registered
-#   * tools/call wiki_search "Test" -> a hit mentioning "Test ZIM file"
-#   * tools/call wiki_get_article    -> the article body
+#   * tools/list            -> zim_search AND zim_get_article registered
+#   * tools/call zim_search "Test" -> a hit mentioning "Test ZIM file"
+#   * tools/call zim_get_article    -> the article body
 #   * tools/call <unknown tool>      -> JSON-RPC error -32602 (registry miss)
 #   * <unknown method>               -> JSON-RPC error -32601 (method not found)
 #   * notification (no id)           -> NO response emitted
@@ -53,9 +53,9 @@ def main():
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-         "params": {"name": "wiki_search", "arguments": {"query": "Test"}}},
+         "params": {"name": "zim_search", "arguments": {"query": "Test"}}},
         {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
-         "params": {"name": "wiki_get_article", "arguments": {"title": "Test ZIM file"}}},
+         "params": {"name": "zim_get_article", "arguments": {"title": "Test ZIM file"}}},
         {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
          "params": {"name": "no_such_tool", "arguments": {}}},
         {"jsonrpc": "2.0", "id": 6, "method": "this/method/does/not/exist", "params": {}},
@@ -101,25 +101,25 @@ def main():
     # --- tools/list contains both wiki tools ---
     tl = responses.get(2, {})
     names = [t.get("name") for t in tl.get("result", {}).get("tools", [])]
-    check("wiki_search" in names, f"tools/list contains wiki_search (got {names})")
-    check("wiki_get_article" in names, f"tools/list contains wiki_get_article (got {names})")
+    check("zim_search" in names, f"tools/list contains zim_search (got {names})")
+    check("zim_get_article" in names, f"tools/list contains zim_get_article (got {names})")
     # each tool exposes a description + inputSchema (registry shaping)
     for t in tl.get("result", {}).get("tools", []):
         check("description" in t and "inputSchema" in t,
               f"tool {t.get('name')} has description + inputSchema")
 
-    # --- tools/call wiki_search "Test" -> a hit ---
+    # --- tools/call zim_search "Test" -> a hit ---
     search = responses.get(3, {})
     sres = search.get("result", {})
     stext = "".join(c.get("text", "") for c in sres.get("content", []))
-    check(sres.get("isError") is False, "wiki_search not an error")
-    check("Test ZIM file" in stext, f"wiki_search hit mentions 'Test ZIM file' (got {stext[:120]!r})")
+    check(sres.get("isError") is False, "zim_search not an error")
+    check("Test ZIM file" in stext, f"zim_search hit mentions 'Test ZIM file' (got {stext[:120]!r})")
 
-    # --- tools/call wiki_get_article -> body ---
+    # --- tools/call zim_get_article -> body ---
     art = responses.get(4, {})
     ares = art.get("result", {})
     atext = "".join(c.get("text", "") for c in ares.get("content", []))
-    check(ares.get("isError") is False, "wiki_get_article not an error")
+    check(ares.get("isError") is False, "zim_get_article not an error")
     check("Test ZIM file" in atext, f"article body mentions 'Test ZIM file' (got {atext[:120]!r})")
 
     # --- unknown tool -> -32602 ---

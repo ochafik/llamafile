@@ -43,9 +43,9 @@ static TurnOutcome demo_turn(Runtime & rt, Agent & a, std::vector<Message> &) {
         rt.add_usage(a, 180, 40);  // planning turn
         std::string e1, e2;
         std::string c1 = rt.spawn(a.id, "researcher", "eiffel-researcher",
-            "Find the Eiffel Tower height.", "How tall is the Eiffel Tower?", {"wiki_*"}, e1);
+            "Find the Eiffel Tower height.", "How tall is the Eiffel Tower?", {"zim_*"}, e1);
         std::string c2 = rt.spawn(a.id, "researcher", "liberty-researcher",
-            "Find the Statue of Liberty height.", "How tall is the Statue of Liberty?", {"wiki_*"}, e2);
+            "Find the Statue of Liberty height.", "How tall is the Statue of Liberty?", {"zim_*"}, e2);
         TurnOutcome o; o.kind = TurnOutcome::PARK;
         o.wait_ids = {c1, c2};
         o.await_call_id = "call_await";
@@ -56,9 +56,9 @@ static TurnOutcome demo_turn(Runtime & rt, Agent & a, std::vector<Message> &) {
     rt.trace(json{{"type", "turn"}, {"agent_id", a.id}, {"parent_id", a.parent_id},
                   {"phase", "begin"}});
     sleep_ms(120);
-    rt.trace(json{{"type", "tool_call"}, {"agent_id", a.id}, {"tool", "wiki_search"}});
+    rt.trace(json{{"type", "tool_call"}, {"agent_id", a.id}, {"tool", "zim_search"}});
     rt.add_usage(a, 140, 35);
-    rt.trace(json{{"type", "tool_result"}, {"agent_id", a.id}, {"tool", "wiki_search"}});
+    rt.trace(json{{"type", "tool_result"}, {"agent_id", a.id}, {"tool", "zim_search"}});
     rt.trace(json{{"type", "turn"}, {"agent_id", a.id}, {"parent_id", a.parent_id},
                   {"phase", "end"},
                   {"agent_tokens_prompt", a.tok_prompt},

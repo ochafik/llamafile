@@ -464,12 +464,14 @@ std::vector<RoleSpec> role_specs() {
             "Run a RESEARCHER sub-agent: it gathers facts using wiki/browser/web "
             "tools in its own loop and returns a short SOURCED summary. Pass the "
             "specific question to research as 'task'.",
-            "You are a RESEARCHER sub-agent. Use the available tools (wiki_search, "
-            "wiki_get_article, browser_*, web_fetch) to gather facts that answer the "
-            "task. Search, read the most relevant result, then ANSWER. Do not repeat "
-            "an identical tool call. When you have the facts, stop calling tools and "
-            "write a short factual summary that cites its source titles. Be concise.",
-            {"wiki_search", "wiki_get_article", "wiki_*", "browser_*", "web_fetch", "code_run_js"},
+            "You are a RESEARCHER sub-agent. Use the available tools (zim_search, "
+            "zim_get_article, list_zims, browser_*, web_fetch) to gather facts that "
+            "answer the task. Search, read the most relevant result, then ANSWER. Do "
+            "not repeat an identical tool call. When you have the facts, stop calling "
+            "tools and write a short factual summary that cites its source titles. Be "
+            "concise.",
+            {"zim_search", "zim_get_article", "zim_open", "list_zims", "zim_*",
+             "browser_*", "web_fetch", "code_run_js"},
             12,  // room for several search/read rounds before synthesizing
         },
         {
@@ -488,10 +490,10 @@ std::vector<RoleSpec> role_specs() {
             "against read-only sources and returns PASS/FAIL per claim with evidence. "
             "Pass the claim(s) to check as 'claims'.",
             "You are a VERIFIER sub-agent. Adversarially re-check each given claim "
-            "against the read tools (wiki_search, wiki_get_article, web_fetch). Flag "
+            "against the read tools (zim_search, zim_get_article, web_fetch). Flag "
             "anything unsupported. Return PASS/FAIL per claim with a one-line evidence "
             "note. Be concise; stop calling tools once you can judge.",
-            {"wiki_search", "wiki_get_article", "wiki_*", "web_fetch",
+            {"zim_search", "zim_get_article", "list_zims", "zim_*", "web_fetch",
              "read_file", "grep_search", "file_glob_search"},
             10,  // room to re-check several claims against sources
         },

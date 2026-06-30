@@ -18,9 +18,9 @@
 #   ./o/llamafile/llamafile --server -m tiny.gguf \
 #       --mcp "$PWD/o/llamafile/llamafile mcp-server --zim tests/fixtures/small_nons.zim"
 #   # then, against the running server:
-#   curl -s localhost:8080/tools | grep -o wiki_search          # tool bridged in
+#   curl -s localhost:8080/tools | grep -o zim_search          # tool bridged in
 #   curl -s localhost:8080/tools -X POST -H 'content-type: application/json' \
-#        -d '{"name":"wiki_search","arguments":{"query":"Test"}}'   # call it
+#        -d '{"name":"zim_search","arguments":{"query":"Test"}}'   # call it
 #
 set -e
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -49,5 +49,5 @@ for i in $(seq 1 60); do
 done
 
 TOOLS=$(curl -fs "http://127.0.0.1:$PORT/tools" || true)
-echo "$TOOLS" | grep -q wiki_search || { echo "FAIL: wiki_search not bridged into /tools"; exit 1; }
-echo "PASS: wiki_search bridged into the server /tools registry"
+echo "$TOOLS" | grep -q zim_search || { echo "FAIL: zim_search not bridged into /tools"; exit 1; }
+echo "PASS: zim_search bridged into the server /tools registry"

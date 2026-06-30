@@ -42,6 +42,7 @@
 #include "mcp_host.h"
 
 #include "server-tools.h"  // server_tool, server_tools (llama.cpp/tools/server)
+#include "wiki_route.h"    // llamafile_wiki_register_tools (in-process ZIM tools)
 
 #include <nlohmann/json.hpp>
 
@@ -602,6 +603,13 @@ int llamafile_mcp_register_tools(server_tools & registry) {
     signal(SIGPIPE, SIG_IGN);
 
     int total = 0;
+
+    // In-process ZIM tools (zim_search/zim_get_article/zim_open/list_zims) when
+    // `--zim` was given. Registered FIRST so they share the same open ZIM +
+    // Xapian handles as the /zim route and are visible to the delegate/runtime
+    // role allow-lists (those are registered after the MCP host in server.cpp).
+    total += llamafile_wiki_register_tools(registry);
+
     for (const auto & spec : g_specs) {
         auto srv = std::make_unique<McpServer>();
         srv->spec = spec;

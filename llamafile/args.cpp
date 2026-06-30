@@ -202,18 +202,16 @@ LlamafileArgs parse_llamafile_args(int argc, char** argv) {
             continue;
         }
 
-        // --zim PATH: enable the offline Wikipedia title tools (wiki_search/
-        // wiki_get_article) in --server mode by bridging them in via our own
-        // mcp-server subprocess (same path as a manual `--mcp 'llamafile mcp-server
-        // --zim …'`), so they land in the /tools registry. Consumed here so it never
-        // reaches llama.cpp's parser. (The `wikipedia`/`mcp-server` subcommands take
-        // --zim too; this makes it a first-class --server flag like --wikidata.)
+        // --zim PATH: register the offline-encyclopedia ZIM in-process (REPEATABLE
+        // — pass it more than once for multiple archives). The main --server then
+        // serves both the GET /zim/<id>/<path> article browser AND the in-process
+        // zim_search / zim_get_article / zim_open / list_zims tools off ONE shared
+        // set of ZIM + Xapian handles (see wiki_route.cpp). No mcp-server
+        // subprocess is needed for --server; the `mcp-server`/`wikipedia`
+        // subcommands still take --zim for external MCP / CLI clients. Consumed
+        // here so it never reaches llama.cpp's parser.
         if (strcmp(arg, "--zim") == 0) {
             if (i + 1 < argc) {
-                llamafile_mcp_add_server(self_mcp_server_spec("--zim", argv[i + 1]));
-                // ALSO open the ZIM in-process for the GET /wiki/<path> article
-                // browser (the subprocess bridge only speaks stdio JSON-RPC; the
-                // HTTP route needs an in-process handle). See wiki_route.cpp.
                 llamafile_wiki_enable(argv[i + 1]);
                 ++i;
             }

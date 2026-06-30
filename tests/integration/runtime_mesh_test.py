@@ -87,7 +87,7 @@ def main():
 
         goal = ("Spawn TWO researcher sub-agents to work IN PARALLEL: one to find the "
                 "height of the Eiffel Tower, one to find the height of the Statue of "
-                "Liberty. Use wiki_search/wiki_get_article. Await both, then compare "
+                "Liberty. Use zim_search/zim_get_article. Await both, then compare "
                 "their heights and state which is taller.")
         s, b = http("POST", base + "/runtime/start", {"goal": goal, "turn_budget": 60})
         print("start ->", s, b, file=sys.stderr)
@@ -191,7 +191,7 @@ def analyze(trace, orch, final):
 
     # (b) researchers use wiki tools
     wiki = [e for e in tcalls if e.get("agent_id") in researchers and
-            str(e.get("tool","")).startswith("wiki")]
+            str(e.get("tool","")).startswith("zim")]
     print(f"\nwiki tool calls by researchers: {len(wiki)} -> "
           f"{sorted(set(e['tool'] for e in wiki))}")
 

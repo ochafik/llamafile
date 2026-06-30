@@ -17,33 +17,44 @@
 
 #pragma once
 
-// llamafile WIKI BROWSER — an in-process offline Wikipedia browser.
+// llamafile ZIM REGISTRY — an in-process offline encyclopedia (one or more ZIM
+// archives) with a browser AND the search tools, sharing one set of handles.
 //
-// When `--zim PATH` is given to `--server`, the main server process opens the
-// ZIM in-process (in ADDITION to the mcp-server subprocess bridge that backs
-// the wiki_* tools) and serves the article HTML straight from the archive:
+// When `--zim PATH` is given to `--server` (REPEATABLE), the main server opens
+// each ZIM + its embedded Xapian BM25 indexes in-process and serves:
 //
-//   GET /wiki/<path>   -> the article's ORIGINAL HTML, with internal links
-//                         rewritten to /wiki/... so you can click through the
-//                         encyclopedia inside the binary. Non-HTML entries
-//                         (CSS/JS/images) are streamed with their ZIM MIME type
-//                         so the page renders with its real styling. 404 if
-//                         the path is absent.
+//   GET /zim/<id>/<path> -> the article's ORIGINAL HTML, internal links
+//                           rewritten to /zim/<id>/... so you can click through
+//                           the offline encyclopedia inside the binary. Non-HTML
+//                           entries (CSS/JS/images) stream with their ZIM MIME
+//                           type. `id` is the ZIM's filename stem (see list_zims).
+//   GET /wiki/<path>     -> back-compat alias to the FIRST ZIM.
 //
-// The companion `wiki_open(title|path) -> {url}` tool lives in the mcp-server
-// subprocess (mcp_server.cpp); it hands the agent a /wiki/<path> link that this
-// route serves.
+// and the in-process tools zim_search / zim_get_article / zim_open / list_zims
+// (see llamafile_wiki_register_tools), which the agentic loop and the model call
+// over the same shared handles.
 
 struct server_http_context;  // llama.cpp/tools/server/server-http.h
+struct server_tools;         // llama.cpp/tools/server/server-tools.h
 
-// `--zim PATH` plumbing (called during llamafile arg parsing in args.cpp): open
-// the ZIM in-process for the /wiki article browser. Safe to call more than once
-// (last path wins); the archive is opened lazily at route-registration time.
+// `--zim PATH` plumbing (called during llamafile arg parsing in args.cpp): add
+// a ZIM to the in-process registry for the /zim article browser AND the
+// in-process zim_* tools. REPEATABLE — each call appends one archive (multiple
+// --zim flags => multiple archives, each addressable by its filename-stem id).
+// The archives are opened lazily at route/tool-registration time.
 void llamafile_wiki_enable(const char * zim_path);
 bool llamafile_wiki_enabled();
 
-// Register the GET /wiki/<path> route on the server's HTTP context. Called from
-// the server.cpp seam BEFORE the HTTP server starts. Opens the in-process ZIM
-// handle if not already open; a failed open disables the route (logged, not
-// fatal).
+// Register the in-process ZIM tools (zim_search, zim_get_article, zim_open,
+// list_zims) into the main server's tool registry, sharing the same open ZIM +
+// Xapian handles as the /zim route. Returns the number of tools registered.
+// Called from llamafile_mcp_register_tools (mcp_host.cpp) so it lands in /tools
+// BEFORE the delegate/runtime roles are registered (their allow-lists can see
+// it). No-op (returns 0) unless --zim was given.
+int llamafile_wiki_register_tools(server_tools & registry);
+
+// Register the GET /zim/<id>/<path> route (and the back-compat /wiki/<path>
+// alias to the first ZIM) on the server's HTTP context. Called from the
+// server.cpp seam BEFORE the HTTP server starts. Opens the in-process ZIM
+// handles if not already open; a failed open is logged, not fatal.
 void llamafile_wiki_register_routes(server_http_context & http);
