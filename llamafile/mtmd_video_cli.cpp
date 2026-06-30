@@ -42,7 +42,7 @@ void usage(const char * argv0) {
     fprintf(stderr,
         "usage: %s mtmd-video-cli -m MODEL.gguf --mmproj MMPROJ.gguf --frames DIR\n"
         "                         [-p PROMPT] [--frame-size N] [--n-ctx N]\n"
-        "                         [-ngl N] [--max-tool-tokens N] [--verbose]\n",
+        "                         [-ngl N] [--max-tool-tokens N] [--flash-attn] [--verbose]\n",
         argv0);
 }
 
@@ -120,6 +120,8 @@ int mtmd_video_cli_main(int argc, char ** argv) {
     int ngl = -1;
     int max_tool_tokens = 128;
     bool verbose = false;
+    bool flash_attn = false;  // off by default: Flash Attention SIGBUSes on the
+                              // Qwen3.5/3.6 gated-delta-net hybrid VLMs (see below)
 
     for (int i = 2; i < argc; ++i) {
         std::string a = argv[i];
@@ -136,6 +138,7 @@ int mtmd_video_cli_main(int argc, char ** argv) {
         else if (a == "-ngl" || a == "--n-gpu-layers") ngl      = atoi(next("-ngl"));
         else if (a == "--max-tool-tokens")          max_tool_tokens = atoi(next("--max-tool-tokens"));
         else if (a == "--verbose" || a == "-v")     verbose = true;
+        else if (a == "--flash-attn" || a == "-fa") flash_attn = true;
         else if (a == "-h" || a == "--help")        { usage(argv[0]); return 0; }
         else { fprintf(stderr, "error: unknown arg '%s'\n", a.c_str()); usage(argv[0]); return 2; }
     }
@@ -171,6 +174,14 @@ int mtmd_video_cli_main(int argc, char ** argv) {
     params.n_ctx       = n_ctx;
     params.n_batch     = 512;
     params.n_gpu_layers = ngl;
+    // Flash Attention is OFF by default for the video path: on the Qwen3.5/3.6
+    // gated-delta-net hybrid VLMs (attention + recurrent layers) enabling FA
+    // SIGBUSes during the first post-image decode — reproducible on both CPU and
+    // Metal, independent of the ghost-KV rewind. Disabling FA lets the hybrid
+    // model decode + generate tool calls correctly. Pass --flash-attn / -fa to
+    // re-enable (e.g. for a pure-attention VLM, or once the ggml bug is fixed).
+    params.flash_attn_type = flash_attn ? LLAMA_FLASH_ATTN_TYPE_AUTO
+                                        : LLAMA_FLASH_ATTN_TYPE_DISABLED;
 
     fprintf(stderr, "loading model: %s\n", model_path.c_str());
     llama_model_params mp = common_model_params_to_llama(params);
