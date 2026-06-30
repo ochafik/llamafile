@@ -236,26 +236,67 @@ const uint8_t *zim_get_checksum(zim_archive *archive) {
 // -----------------------------------------------------------------
 
 bool zim_parse_mime_list(zim_archive *archive) {
-    // MIME list starts right after the header (at mime_list_pos)
-    // and ends at the first pointer list
+    // The MIME type list is a sequence of NUL-terminated strings ending with an
+    // empty string (a double-NUL). The header gives only its start position
+    // (mime_list_pos), NOT its length: the length must be discovered by scanning
+    // for the double-NUL terminator.
+    //
+    // It is WRONG to assume the list ends at path_ptr_pos. In modern libzim
+    // archives the pointer lists are written at the very END of the file, so
+    // path_ptr_pos - mime_list_pos spans almost the whole archive (e.g. ~115 GB
+    // for the full English Wikipedia). The old code malloc'd and read that span,
+    // which slurps the entire file into RAM and hangs/OOMs. The list itself is
+    // always tiny (a few hundred bytes), so read a small bounded window and stop
+    // at the terminator.
     uint64_t mime_start = archive->header.mime_list_pos;
-    uint64_t mime_end = archive->header.path_ptr_pos;
-
-    if (mime_end <= mime_start) {
-        zim_set_error("invalid MIME list bounds");
+    if (mime_start >= archive->file_size) {
+        zim_set_error("invalid MIME list position");
         return false;
     }
 
-    size_t mime_size = mime_end - mime_start;
-    archive->mime_list = malloc(mime_size);
+    // MIME lists are tiny; 64 KiB is a generous upper bound. Clamp the read to
+    // the bytes actually available before EOF.
+    size_t window = 64 * 1024;
+    uint64_t avail = archive->file_size - mime_start;
+    if ((uint64_t)window > avail)
+        window = (size_t)avail;
+
+    archive->mime_list = malloc(window ? window : 1);
     if (!archive->mime_list) {
         zim_set_error("out of memory for MIME list");
         return false;
     }
 
-    if (!zim_read_at(archive, mime_start, archive->mime_list, mime_size)) {
+    if (window == 0 ||
+        !zim_read_at(archive, mime_start, archive->mime_list, window)) {
         free(archive->mime_list);
         archive->mime_list = NULL;
+        if (window != 0)
+            return false;
+        zim_set_error("empty MIME list region");
+        return false;
+    }
+
+    // Locate the terminating empty string (double-NUL). mime_size includes the
+    // first NUL of the terminating pair (the trailing NUL of the last real
+    // string), so every contained string stays NUL-terminated within bounds.
+    size_t mime_size = 0;
+    bool found = false;
+    for (size_t i = 0; i + 1 < window; i++) {
+        if (archive->mime_list[i] == '\0' && archive->mime_list[i + 1] == '\0') {
+            mime_size = i + 1;
+            found = true;
+            break;
+        }
+    }
+    if (!found && window > 0 && archive->mime_list[0] == '\0') {
+        mime_size = 1;  // empty MIME list (immediate terminator)
+        found = true;
+    }
+    if (!found) {
+        free(archive->mime_list);
+        archive->mime_list = NULL;
+        zim_set_error("MIME list terminator not found within %zu bytes", window);
         return false;
     }
     archive->mime_list_size = mime_size;

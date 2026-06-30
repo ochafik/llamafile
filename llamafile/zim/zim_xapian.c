@@ -709,7 +709,14 @@ static int iterate_postlist(zim_xapian *idx, const unsigned char *term,
     // so the chunk's first docid must come from its KEY, not from chaining off
     // the previous chunk's last docid.
     (void)last_did;
+    // Termination guard: an index can hold at most blob_size/BLOCKSIZE blocks, so
+    // the chunk count is bounded by that. A malformed/cyclic index that never
+    // sets is_last must fail loud rather than spin forever.
+    uint64_t max_chunks = idx->blob_size / GLASS_BLOCKSIZE + 16;
+    uint64_t chunks = 0;
     while (!is_last) {
+        if (++chunks > max_chunks)
+            return 0;
         if (!cursor_advance(&c))
             break;
         if (!cursor_get(&c, &li))
@@ -741,18 +748,23 @@ static void doclen_collect(void *vctx, uint32_t did, uint32_t len) {
     struct doclen_ctx *dc = (struct doclen_ctx *)vctx;
     zim_xapian *idx = dc->idx;
     if (did >= idx->doclen_cap) {
-        uint32_t ncap = idx->doclen_cap ? idx->doclen_cap * 2 : 1024;
-        while (ncap <= did)
+        // Grow in 64-bit to avoid a uint32 overflow to 0 (which would spin
+        // forever) if a malformed index yields an absurd docid.
+        uint64_t ncap = idx->doclen_cap ? (uint64_t)idx->doclen_cap * 2 : 1024;
+        while (ncap <= (uint64_t)did)
             ncap *= 2;
-        uint32_t *n = (uint32_t *)realloc(idx->doclen, ncap * sizeof(uint32_t));
+        if (ncap > UINT32_MAX)
+            ncap = (uint64_t)did + 1;
+        uint32_t *n =
+            (uint32_t *)realloc(idx->doclen, (size_t)ncap * sizeof(uint32_t));
         if (!n) {
             dc->ok = 0;
             return;
         }
         memset(n + idx->doclen_cap, 0,
-               (ncap - idx->doclen_cap) * sizeof(uint32_t));
+               (size_t)(ncap - idx->doclen_cap) * sizeof(uint32_t));
         idx->doclen = n;
-        idx->doclen_cap = ncap;
+        idx->doclen_cap = (uint32_t)ncap;
     }
     idx->doclen[did] = len;
     if (did > idx->doclen_max)
