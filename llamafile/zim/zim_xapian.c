@@ -22,6 +22,8 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 #include <third_party/zlib/zlib.h>
 
@@ -864,6 +866,22 @@ static int tokenize(const char *query, char terms[][128], int max) {
 #define BM25_K1 1.2
 #define BM25_B  0.75
 
+// Document-frequency cap (WAND/block-max-style pruning). A term occurring in a
+// very large fraction of the corpus (a stopword like "the"/"of") carries almost
+// no discriminative BM25 signal, yet scoring it walks its entire multi-million
+// entry postlist — the single worst case for query latency (a bare "the" query
+// otherwise takes ~135 s on the 8.4 M-doc English Wikipedia index). We therefore
+// SKIP scoring any term whose document frequency exceeds DF_CAP_NUM/DF_CAP_DEN of
+// the doccount. The threshold is deliberately high (25 %): ordinary query terms
+// never reach it, so exact BM25 ranking is preserved for normal queries; only
+// genuine stopwords — whose near-flat contribution is dominated by the rarer
+// terms in any multi-word query anyway — are pruned. Set DF_CAP_NUM to 0 to
+// disable and score every term exactly.
+#ifndef ZIM_XAPIAN_DF_CAP_NUM
+#define ZIM_XAPIAN_DF_CAP_NUM 1
+#define ZIM_XAPIAN_DF_CAP_DEN 4
+#endif
+
 struct score_ctx {
     zim_xapian *idx;
     float *score;      // indexed by docid
@@ -892,13 +910,56 @@ static void score_posting(void *vctx, uint32_t did, uint32_t wdf) {
     }
 }
 
+// Read ONLY a term's document frequency (termfreq) from its first postlist
+// chunk header, without walking the (potentially multi-million entry)
+// continuation chunks. This is the head of iterate_postlist() up to the point
+// termfreq is decoded, so it yields an identical value at a fraction of the
+// cost (~log(n) block faults instead of a full postlist scan). Returns 1 with
+// *tf_out set (0 when the term is absent), or 0 on malformed data.
+static int peek_termfreq(zim_xapian *idx, const unsigned char *term, int tlen,
+                         uint64_t *tf_out) {
+    *tf_out = 0;
+    glass_cursor c;
+    if (!cursor_seek(&c, idx, idx->postlist_root, term, tlen))
+        return 0;
+    unsigned char scratch[1 << 16];
+    leaf_item li;
+    if (!cursor_get(&c, &li)) {
+        if (!cursor_advance(&c))
+            return 1;            // tree exhausted: term absent
+        if (!cursor_get(&c, &li))
+            return 1;
+    }
+    if (!(li.first && li.klen == tlen && memcmp(li.key, term, (size_t)tlen) == 0))
+        return 1;                // term absent
+    const unsigned char *tag;
+    size_t taglen;
+    if (!get_tag(&li, scratch, sizeof(scratch), &tag, &taglen))
+        return 0;
+    const unsigned char *p = tag, *e = tag + taglen;
+    uint64_t termfreq;
+    if (!unpack_uint(&p, e, &termfreq))
+        return 0;
+    *tf_out = termfreq;
+    return 1;
+}
+
 // Score one term's full postlist into `target` (BM25 with this index's stats).
 // `maxmerge` controls how postings combine into `target` (see score_posting).
 // No-op (term absent) leaves `target` untouched. `N` is the doccount.
 static void score_term_into(zim_xapian *idx, const unsigned char *term, int tlen,
                             double N, float *target, int maxmerge) {
     uint64_t tf = 0;
-    if (!iterate_postlist(idx, term, tlen, &tf, NULL, NULL) || tf == 0)
+    // Cheaply obtain the document frequency from the first chunk header (this
+    // replaces a redundant full postlist walk that the scoring pass below
+    // repeats anyway).
+    if (!peek_termfreq(idx, term, tlen, &tf) || tf == 0)
+        return;
+    // Document-frequency cap: skip scoring stopword-like terms whose postlist
+    // spans a large fraction of the corpus (see ZIM_XAPIAN_DF_CAP_NUM). Bounds
+    // worst-case query time; preserves exact ranking for ordinary terms.
+    if (ZIM_XAPIAN_DF_CAP_NUM > 0 && idx->doccount > 0 &&
+        tf > (uint64_t)idx->doccount * ZIM_XAPIAN_DF_CAP_NUM / ZIM_XAPIAN_DF_CAP_DEN)
         return;
     struct score_ctx sc;
     sc.idx = idx;
@@ -913,6 +974,44 @@ static void score_term_into(zim_xapian *idx, const unsigned char *term, int tlen
 // =====================================================================
 // Public API
 // =====================================================================
+
+// Hint the OS to prefetch `nblocks` Glass blocks starting at block `first` — the
+// hot navigation top of a table (its B-tree root + a small window). This warms
+// the tree descent on high-latency storage (esp. SD cards) while the bulk of the
+// index stays MADV_RANDOM (set at mmap time) for its scattered leaf access.
+// No-op for the malloc'd fallback (no mmap) or where MADV_WILLNEED is absent.
+static void xp_willneed(const zim_xapian *idx, uint32_t first, uint32_t nblocks) {
+#ifdef MADV_WILLNEED
+    if (!idx->map_base || !nblocks)
+        return;
+    size_t off = (size_t)first * GLASS_BLOCKSIZE;
+    if (off >= idx->blob_size)
+        return;
+    size_t len = (size_t)nblocks * GLASS_BLOCKSIZE;
+    if (off + len > idx->blob_size)
+        len = idx->blob_size - off;
+    // The blob may sit `delta` bytes into the mapping; align the start down to a
+    // page and clamp the whole range to the mapping bounds before advising.
+    unsigned char *addr = idx->blob + off;
+    long pg = sysconf(_SC_PAGESIZE);
+    if (pg <= 0) pg = 4096;
+    uintptr_t a = (uintptr_t)addr;
+    uintptr_t aligned = a & ~((uintptr_t)pg - 1);
+    unsigned char *mb = (unsigned char *)idx->map_base;
+    if ((unsigned char *)aligned < mb)
+        aligned = (uintptr_t)mb;
+    size_t before = (size_t)((unsigned char *)aligned < (unsigned char *)a
+                                 ? (unsigned char *)a - (unsigned char *)aligned
+                                 : 0);
+    size_t wlen = len + before;
+    size_t avail = idx->map_len - (size_t)((unsigned char *)aligned - mb);
+    if (wlen > avail)
+        wlen = avail;
+    madvise((void *)aligned, wlen, MADV_WILLNEED);
+#else
+    (void)idx; (void)first; (void)nblocks;
+#endif
+}
 
 zim_xapian *zim_xapian_open(zim_archive *z, const char *entry_path) {
     if (!z || !entry_path) {
@@ -964,7 +1063,37 @@ zim_xapian *zim_xapian_open(zim_archive *z, const char *entry_path) {
         zim_xapian_close(idx);
         return NULL;
     }
+    // Prefetch the hot navigation tops (POSTLIST + DOCDATA roots and a small
+    // window) so the first query's B-tree descent doesn't stall block-by-block
+    // on slow storage. The rest of the index remains MADV_RANDOM.
+    xp_willneed(idx, idx->postlist_root, 4);
+    xp_willneed(idx, idx->docdata_root, 4);
     return idx;
+}
+
+// Cheaply pre-fault the index's shared hot structure so the FIRST real query
+// does not pay a large one-time cost. Concretely: (a) fault the POSTLIST B-tree
+// navigation spine via a nonsense-term seek — a term with an empty postlist, so
+// cursor_seek descends root->leaf (~log(n) blocks) and returns immediately on
+// absence, WITHOUT scanning any large postlist; (b) fault the DOCDATA B-tree
+// spine; (c) materialize the doclen array (the first query needs it regardless,
+// so we move that one-time pass off the user's first query). Crucially this does
+// NOT warm with a high-frequency term, which would iterate a giant postlist.
+void zim_xapian_warm(zim_xapian *idx) {
+    if (!idx)
+        return;
+    // (a) POSTLIST navigation: a byte sequence with an (essentially) empty
+    // postlist. Leading 0x7f keeps it out of the special \x00\xe0 doclen range.
+    static const unsigned char kAbsent[] = {
+        0x7f, 'z', 'q', 'x', 'j', 'k', 'q', 'v', 'w', 'x', 'z', 'q', 'j', 0x7f
+    };
+    uint64_t tf = 0;
+    peek_termfreq(idx, kAbsent, (int)sizeof(kAbsent), &tf);
+    // (b) DOCDATA navigation (descend to docid 1's leaf; result ignored).
+    char tmp[8];
+    docdata_lookup(idx, 1, tmp, sizeof(tmp));
+    // (c) One-time document-length materialization.
+    ensure_doclen(idx);
 }
 
 void zim_xapian_close(zim_xapian *idx) {

@@ -85,6 +85,15 @@ typedef const char *(*zim_xapian_stem_fn)(void *ctx, const char *term,
                                           char *buf, size_t buflen);
 void zim_xapian_set_stemmer(zim_xapian *idx, zim_xapian_stem_fn stem, void *ctx);
 
+// Cheaply pre-fault the index's shared hot structure so the FIRST real query
+// does not stall on a large one-time cost. It faults the POSTLIST and DOCDATA
+// B-tree navigation spines (~log(n) blocks each, via a nonsense-term seek — NOT
+// a high-frequency term, so no giant postlist is scanned) and materializes the
+// document-length table. Intended for a background warm-up thread right after
+// open; especially valuable on high-latency storage (SD cards). Safe to call
+// once per handle.
+void zim_xapian_warm(zim_xapian *idx);
+
 // Free a hit array returned by zim_xapian_search.
 void zim_xapian_free_hits(zim_xapian_hit *hits, int count);
 

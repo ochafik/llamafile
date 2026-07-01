@@ -995,13 +995,19 @@ struct ListZimsTool : server_tool {
 // whole sweep — though, by necessity, it still serializes with whichever single
 // ZIM is being faulted at that instant (see the report's caveat).
 
-// Fault one Glass index's hot blocks with a throwaway BM25 query. Caller holds
-// g_zim_mu (the Xapian readers are not thread-safe).
+// Fault one Glass index's hot navigation structure. Caller holds g_zim_mu (the
+// Xapian readers are not thread-safe).
+//
+// This used to run a throwaway zim_xapian_search(idx, "the", 1). That was
+// pathological: "the" is the most frequent term (its postlist ≈ every one of
+// the corpus's millions of docs), and BM25 top-1 must iterate the WHOLE postlist
+// — ~135 s of scattered mmap page-faults on the 115 GB English Wikipedia index
+// on a slow SD card. zim_xapian_warm() instead faults only the B-tree
+// navigation spines (~log(n) blocks) plus the one-time doclen pass — seconds,
+// not minutes — which is all the first real query actually needs warm.
 void warm_xapian(zim_xapian * idx) {
     if (!idx) return;
-    zim_xapian_hit * hits = nullptr;
-    int nh = zim_xapian_search(idx, "the", 1, &hits);
-    if (nh > 0) zim_xapian_free_hits(hits, nh);
+    zim_xapian_warm(idx);
 }
 
 void * wiki_warm_thread_fn(void *) {
